@@ -219,7 +219,7 @@ esp_err_t m5_display_init(m5_display_t *display)
     lcd_data_byte(0x55);  // 16-bit color
 
     lcd_cmd(ST7789_MADCTL);
-    lcd_data_byte(0x00);  // RGB, no flip
+    lcd_data_byte(0x70);  // MY=0, MX=1, MV=1, ML=1 for landscape 240x135
 
     lcd_cmd(ST7789_INVON);
     vTaskDelay(pdMS_TO_TICKS(10));
@@ -240,9 +240,11 @@ esp_err_t m5_display_init(m5_display_t *display)
 
     ESP_LOGI(TAG, "Display initialized: %dx%d", display->width, display->height);
 
-    // Clear screen
-    m5_display_clear(display, COLOR_BLACK);
+    // Test with white screen to verify SPI is working
+    m5_display_clear(display, COLOR_WHITE);
     m5_display_flush(display);
+
+    ESP_LOGI(TAG, "White screen test flushed");
 
     return ESP_OK;
 }
@@ -308,14 +310,28 @@ void m5_display_draw_string(m5_display_t *display, int x, int y, const char *str
 
 void m5_display_flush(m5_display_t *display)
 {
-    // Set column address
+    // M5StickC Plus2 offsets for 240x135 in landscape mode
+    uint16_t x_offset = 40;
+    uint16_t y_offset = 53;  // Adjusted to eliminate bottom artifact
+
+    // Set column address (with offset)
     lcd_cmd(ST7789_CASET);
-    uint8_t caset[4] = {0, 0, (LCD_WIDTH - 1) >> 8, (LCD_WIDTH - 1) & 0xFF};
+    uint8_t caset[4] = {
+        (x_offset) >> 8,
+        (x_offset) & 0xFF,
+        (x_offset + LCD_WIDTH - 1) >> 8,
+        (x_offset + LCD_WIDTH - 1) & 0xFF
+    };
     lcd_data(caset, 4);
 
-    // Set row address
+    // Set row address (with offset)
     lcd_cmd(ST7789_RASET);
-    uint8_t raset[4] = {0, 0, (LCD_HEIGHT - 1) >> 8, (LCD_HEIGHT - 1) & 0xFF};
+    uint8_t raset[4] = {
+        (y_offset) >> 8,
+        (y_offset) & 0xFF,
+        (y_offset + LCD_HEIGHT - 1) >> 8,
+        (y_offset + LCD_HEIGHT - 1) & 0xFF
+    };
     lcd_data(raset, 4);
 
     // Write RAM

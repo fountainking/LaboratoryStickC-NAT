@@ -8,15 +8,15 @@
 #define LCD_WIDTH  240
 #define LCD_HEIGHT 135
 
-// Pin definitions for M5StickC Plus2 (verified from M5Stack sources)
-#define LCD_PIN_SDA       15  // MOSI - confirmed
-#define LCD_PIN_SCL       13  // SCLK - confirmed
-#define LCD_PIN_CS        5   // Chip Select (trying common M5 pins)
-#define LCD_PIN_DC        23  // Data/Command (updated)
-#define LCD_PIN_RST       18  // Reset (updated)
-#define LCD_PIN_BL        27  // Backlight - confirmed
+// Pin definitions for M5StickC Plus2 (verified from official schematic)
+#define LCD_PIN_SDA       15  // MOSI
+#define LCD_PIN_SCL       13  // SCLK
+#define LCD_PIN_CS        5   // Chip Select
+#define LCD_PIN_DC        14  // Data/Command - FROM SCHEMATIC
+#define LCD_PIN_RST       12  // Reset - FROM SCHEMATIC
+#define LCD_PIN_BL        27  // Backlight
 
-#define LCD_PIXEL_CLOCK_HZ (40 * 1000 * 1000)
+#define LCD_PIXEL_CLOCK_HZ (26 * 1000 * 1000)  // Max for non-IOMUX pins
 #define LCD_CMD_BITS       8
 #define LCD_PARAM_BITS     8
 

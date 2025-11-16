@@ -15,6 +15,7 @@
 #include "captive_portal.h"
 #include "debug_screen.h"
 #include "tcp_debug.h"
+#include "hardware_test.h"
 
 static const char *TAG = "Laboratory";
 
@@ -75,7 +76,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "=== Laboratory StickC Plus 2 - ESP-IDF with NAT ===");
+    ESP_LOGI(TAG, "=== Laboratory StickC Plus 2 - NAT Router v1.0 ===");
 
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
@@ -84,6 +85,11 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    /*  HARDWARE TEST - DISABLED (use when needed)
+    run_hardware_tests();
+    return;
+    */
 
     // Initialize network stack
     ESP_ERROR_CHECK(esp_netif_init());

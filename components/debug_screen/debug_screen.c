@@ -12,6 +12,7 @@
 
 static const char *TAG = "DebugScreen";
 static m5_display_t display;
+static bool display_initialized = false;
 
 void debug_screen_init(void)
 {
@@ -72,11 +73,16 @@ void debug_screen_init(void)
     m5_display_draw_string(&display, 10, 65, "Starting...", COLOR_WHITE, COLOR_BLACK);
     m5_display_flush(&display);
 
+    display_initialized = true;
     ESP_LOGI(TAG, "Debug screen initialized");
 }
 
 void debug_screen_update(void)
 {
+    if (!display_initialized) {
+        return;  // Silently skip if display failed to init
+    }
+
     char line[64];  // Increased buffer for longer strings
     int y = 2;
 
