@@ -13,6 +13,8 @@
 #include "lwip/lwip_napt.h"
 
 #include "captive_portal.h"
+#include "debug_screen.h"
+#include "tcp_debug.h"
 
 static const char *TAG = "Laboratory";
 
@@ -32,10 +34,14 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGI(TAG, "Disconnected from AP, retrying...");
+        tcp_debug_printf("[WIFI] STA disconnected, retrying...\r\n");
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STACONNECTED) {
         wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
         ESP_LOGI(TAG, "Client connected to AP - MAC: %02x:%02x:%02x:%02x:%02x:%02x",
+                 event->mac[0], event->mac[1], event->mac[2],
+                 event->mac[3], event->mac[4], event->mac[5]);
+        tcp_debug_printf("[AP] Client connected: %02x:%02x:%02x:%02x:%02x:%02x\r\n",
                  event->mac[0], event->mac[1], event->mac[2],
                  event->mac[3], event->mac[4], event->mac[5]);
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STADISCONNECTED) {
@@ -43,9 +49,13 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "Client disconnected from AP - MAC: %02x:%02x:%02x:%02x:%02x:%02x",
                  event->mac[0], event->mac[1], event->mac[2],
                  event->mac[3], event->mac[4], event->mac[5]);
+        tcp_debug_printf("[AP] Client disconnected: %02x:%02x:%02x:%02x:%02x:%02x\r\n",
+                 event->mac[0], event->mac[1], event->mac[2],
+                 event->mac[3], event->mac[4], event->mac[5]);
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(TAG, "STA Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
+        tcp_debug_printf("[NAT] STA got IP: " IPSTR "\r\n", IP2STR(&event->ip_info.ip));
 
         // ENABLE NAT HERE!
         uint32_t ap_ip = 0x0104A8C0;  // 192.168.4.1 in little-endian
@@ -55,6 +65,11 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "✓ NAT ENABLED on AP interface (192.168.4.1)");
         ESP_LOGI(TAG, "✓ IP Forwarding: STA -> AP NAT active");
         ESP_LOGI(TAG, "Clients can now access internet through this device!");
+        tcp_debug_printf("[NAT] ✓ NAT ENABLED on 192.168.4.1\r\n");
+        tcp_debug_printf("[NAT] ✓ IP Forwarding active - Clients can access internet!\r\n");
+
+        // Start TCP debug server after we have IP
+        tcp_debug_init();
     }
 }
 
@@ -136,8 +151,17 @@ void app_main(void)
     ESP_LOGI(TAG, "WiFi started - AP: %s, connecting to STA: %s", AP_SSID, STA_SSID);
     ESP_LOGI(TAG, "Waiting for STA connection to enable NAT...");
 
+    // Initialize debug screen FIRST for testing
+    debug_screen_init();
+
+    ESP_LOGI(TAG, "Display test starting in 2 seconds...");
+    vTaskDelay(pdMS_TO_TICKS(2000));
+
     // Start captive portal
     start_captive_portal();
+
+    // Start debug screen update task
+    xTaskCreate(debug_screen_task, "debug_screen", 4096, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "=== System Ready ===");
 }
