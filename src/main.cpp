@@ -26,6 +26,8 @@ void drawWiFiStatusDot();
 void playBeep(int frequency, int duration);
 void drawTransferRunning();
 void drawFiles();
+void updateScreensaver();
+void enterScreensaver();
 
 // Configuration
 #define PORTAL_SSID "Laboratory"
@@ -49,7 +51,8 @@ enum UIState {
     UI_SETTINGS,
     UI_WIFI_PORTAL_RUNNING,
     UI_TRANSFER_RUNNING,
-    UI_FILES
+    UI_FILES,
+    UI_SCREENSAVER
 };
 
 UIState uiState = UI_PORTAL_DECK;
@@ -87,21 +90,34 @@ unsigned long btnB_pressStartTime = 0;
 bool btnB_isPressing = false;
 const unsigned long POWER_OFF_HOLD_TIME = 2500; // 2.5 seconds (feels like 4)
 
+// BtnA hold tracking for screensaver
+unsigned long btnA_pressStartTime = 0;
+bool btnA_isPressing = false;
+const unsigned long SCREENSAVER_HOLD_TIME = 2500; // 2.5 seconds
+
+// Screensaver state
+unsigned long lastActivity = 0;
+const unsigned long SCREENSAVER_TIMEOUT = 60000; // 1 minute idle
+int starX = 120, starY = 67;  // Center start
+int starVelX = 5, starVelY = 5;  // Velocity (faster!)
+unsigned long lastStarMove = 0;
+int starColorIndex = 0;
+uint16_t starColors[7] = {COLOR_RED, COLOR_YELLOW, COLOR_GREEN, COLOR_CYAN, COLOR_BLUE, 0xFCF5, COLOR_WHITE}; // Baby pink = 0xFCF5
+
 // Menu options
-#define MAX_MENU_ITEMS 4
+#define MAX_MENU_ITEMS 3
 struct MenuItem {
     String name;
     String ssid;
 };
 
 MenuItem menuItems[MAX_MENU_ITEMS] = {
-    {"Laboratory", "Laboratory"},
+    {"Portal", "Laboratory"},
     {"Transfer", ""},
-    {"Files", ""},
     {"Settings", ""}
 };
 
-int numMenuItems = 4;
+int numMenuItems = 3;
 
 void setup() {
     // Initialize M5Unified
@@ -114,16 +130,19 @@ void setup() {
     M5.Display.fillScreen(COLOR_BLACK);
 
     Serial.begin(115200);
-    delay(100);
+    delay(500); // Give serial time to stabilize
+    Serial.flush(); // Clear any boot garbage
 
     // Initialize BtnC GPIO
     pinMode(BTN_C_PIN, INPUT_PULLUP);
 
-    Serial.printf("[Debug] BtnC GPIO %d initialized\n", BTN_C_PIN);
-
-    Serial.println("\n\n=== Laboratory StickC Plus 2 ===");
-    Serial.println("Portal Deck v1.0");
-    Serial.println("================================\n");
+    // Clear banner
+    Serial.println("\n\n\n\n");
+    Serial.println("========================================");
+    Serial.println("    Laboratory StickC Plus 2 v1.0");
+    Serial.println("========================================");
+    Serial.printf("BtnC GPIO: %d\n", BTN_C_PIN);
+    Serial.println("----------------------------------------\n");
 
     // Boot animation
     playBootAnimation();
@@ -138,6 +157,10 @@ void setup() {
 
         if (savedWifiSSID.length() > 0) {
             Serial.println("[WiFi] Found saved credentials, attempting auto-connect...");
+            savedSSID = savedWifiSSID;
+            savedPassword = savedWifiPass;
+            wifiAttempted = true;  // Mark as attempted so we know credentials exist
+
             WiFi.mode(WIFI_STA);
             WiFi.begin(savedWifiSSID.c_str(), savedWifiPass.c_str());
 
@@ -148,13 +171,10 @@ void setup() {
             }
 
             if (WiFi.status() == WL_CONNECTED) {
-                savedSSID = savedWifiSSID;
-                savedPassword = savedWifiPass;
-                wifiAttempted = true;
                 Serial.printf("[WiFi] Auto-connected! IP: %s\n", WiFi.localIP().toString().c_str());
             } else {
-                Serial.println("[WiFi] Auto-connect failed");
-                WiFi.mode(WIFI_OFF);
+                Serial.println("[WiFi] Auto-connect failed - will keep credentials and retry in background");
+                // Don't turn off WiFi - let it keep trying to reconnect automatically
             }
         }
     }
@@ -162,6 +182,9 @@ void setup() {
     // Show portal deck
     uiState = UI_PORTAL_DECK;
     drawPortalDeck();
+
+    // Initialize activity timer
+    lastActivity = millis();
 
     Serial.println("\n[Main] Ready!");
     Serial.println("[Main] BtnC = Navigate | BtnA = Select/Launch");
@@ -183,12 +206,37 @@ void loop() {
     if (M5.BtnA.wasPressed()) Serial.println("[Debug] BtnA pressed!");
     if (M5.BtnB.wasPressed()) Serial.println("[Debug] BtnB pressed!");
 
+    // Check for screensaver activation (idle timeout or manual)
+    if (uiState != UI_SCREENSAVER) {
+        // Auto-launch screensaver after idle timeout
+        if (millis() - lastActivity > SCREENSAVER_TIMEOUT) {
+            enterScreensaver();
+        }
+
+        // Reset activity on any button press
+        if (M5.BtnA.wasPressed() || M5.BtnB.wasPressed() || btnC_wasPressed) {
+            lastActivity = millis();
+        }
+    } else {
+        // Wake from screensaver on any button press
+        if (M5.BtnA.wasPressed() || M5.BtnB.wasPressed() || btnC_wasPressed) {
+            uiState = UI_PORTAL_DECK;
+            M5.Display.setBrightness(dimEnabled ? 20 : 200);
+            lastActivity = millis();
+            drawPortalDeck();
+            Serial.println("[Screensaver] Woke from screensaver");
+        }
+    }
+
     handleNavigation();
 
-    // Update portal running display
-    if (uiState == UI_PORTAL_RUNNING && portalRunning) {
+    // Update portal loop (runs in background during screensaver too!)
+    if (portalRunning) {
         handlePortalLoop();
+    }
 
+    // Update portal running display (only if on portal screen)
+    if (uiState == UI_PORTAL_RUNNING && portalRunning) {
         if (millis() - lastUpdate >= UPDATE_INTERVAL) {
             lastUpdate = millis();
             drawPortalRunning();
@@ -213,6 +261,11 @@ void loop() {
         handleTransferLoop();
     }
 
+    // Update screensaver
+    if (uiState == UI_SCREENSAVER) {
+        updateScreensaver();
+    }
+
     delay(10);
 }
 
@@ -224,6 +277,26 @@ void handleNavigation() {
             playBeep(800, 50);  // Nav beep
             drawPortalDeck();
             Serial.println("[UI] Selected: " + menuItems[selectedMenuIndex].name);
+        }
+
+        // BtnA long press = Launch screensaver (check before quick press)
+        if (M5.BtnA.isPressed()) {
+            if (!btnA_isPressing) {
+                btnA_isPressing = true;
+                btnA_pressStartTime = millis();
+            }
+            unsigned long holdTime = millis() - btnA_pressStartTime;
+            if (holdTime >= SCREENSAVER_HOLD_TIME) {
+                enterScreensaver();
+                btnA_isPressing = false;
+                return;  // Don't process quick press
+            }
+        } else {
+            // Only process quick press if it wasn't a long press
+            if (btnA_isPressing && millis() - btnA_pressStartTime < SCREENSAVER_HOLD_TIME) {
+                // This was a quick press, will be handled by wasPressed() below
+            }
+            btnA_isPressing = false;
         }
 
         // BtnB = Back (quick press) or Power off (hold 2.5s)
@@ -287,14 +360,6 @@ void handleNavigation() {
                     Serial.println("[UI] Transfer server started");
                 }
             } else if (selectedMenuIndex == 2) {
-                // Files - Show file browser
-                uiState = UI_FILES;
-                selectedFileIndex = 0;
-                folderExpanded[0] = false;  // Reset /html to collapsed
-                folderExpanded[1] = false;  // Reset /media to collapsed
-                drawFiles();
-                Serial.println("[UI] Files - Showing file browser");
-            } else if (selectedMenuIndex == 3) {
                 // Settings - Enter settings menu
                 uiState = UI_SETTINGS;
                 selectedSettingIndex = 0;
@@ -306,7 +371,7 @@ void handleNavigation() {
     else if (uiState == UI_SETTINGS) {
         // BtnC = Navigate settings
         if (btnC_wasPressed) {
-            selectedSettingIndex = (selectedSettingIndex + 1) % 4;  // 4 settings (WiFi, Sound, Dim, Update)
+            selectedSettingIndex = (selectedSettingIndex + 1) % 5;  // 5 settings (WiFi, Sound, Dim, Update, Files)
             playBeep(800, 50);  // Nav beep
             drawSettings();
             Serial.println("[UI] Setting: " + String(selectedSettingIndex));
@@ -362,6 +427,12 @@ void handleNavigation() {
                 // Return to settings after OTA check
                 drawSettings();
                 Serial.println("[Settings] Returned from OTA check");
+            } else if (selectedSettingIndex == 4) {
+                // Files - Enter Files UI
+                uiState = UI_FILES;
+                selectedFileIndex = 0;
+                drawFiles();
+                Serial.println("[UI] Entered Files");
             }
         }
     }
@@ -396,11 +467,11 @@ void handleNavigation() {
         }
     }
     else if (uiState == UI_FILES) {
-        // BtnB = Back to main menu
+        // BtnB = Back to Settings menu
         if (M5.BtnB.wasPressed()) {
-            uiState = UI_PORTAL_DECK;
-            drawPortalDeck();
-            Serial.println("[UI] Back to main menu from Files");
+            uiState = UI_SETTINGS;
+            drawSettings();
+            Serial.println("[UI] Back to Settings from Files");
         }
         // BtnC = Navigate through folders
         if (btnC_wasPressed) {
@@ -457,17 +528,49 @@ void handleNavigation() {
 
 void drawPortalDeck() {
     M5.Display.fillScreen(COLOR_BLACK);
-    M5.Display.setTextSize(2);
 
-    // Title: "labPORTAL"
-    M5.Display.setTextColor(COLOR_YELLOW);
-    M5.Display.setCursor(60, 8);
-    M5.Display.println("labPORTAL");
-
-    // Draw menu list - BIGGER TEXT with scrolling
+    // Title: "labPORTAL" - left aligned, size 3
     M5.Display.setTextSize(3);
-    int yStart = 40;
-    int rowHeight = 30;
+    M5.Display.setTextColor(COLOR_YELLOW);
+    M5.Display.setCursor(10, 5);
+    M5.Display.print("labPORTAL");
+    // Title height: 5 (top) + 24 (text height at size 3) = 29
+
+    // Show WiFi network name with status dot below title (with spacing)
+    if (WiFi.status() == WL_CONNECTED) {
+        String wifiName = WiFi.SSID();
+        if (wifiName.length() > 18) {
+            wifiName = wifiName.substring(0, 18);
+        }
+
+        // Draw WiFi name in blue gradient - aligned at x=20
+        M5.Display.setTextSize(1);
+        int xPos = 20;  // Start at x=20
+        int yPos = 34;  // Vertically centered
+
+        // Draw status dot: BLUE if portal broadcasting, GREEN if just WiFi
+        uint16_t dotColor = isPortalRunning() ? COLOR_BLUE : COLOR_GREEN;
+        M5.Display.fillCircle(14, 38, 3, dotColor);  // 6px to the left of text
+
+        for (int i = 0; i < wifiName.length(); i++) {
+            // Gradient from light blue to dark blue
+            uint8_t progress = (i * 255) / max(1, (int)wifiName.length() - 1);
+            uint16_t r = map(progress, 0, 255, 15, 0);
+            uint16_t g = map(progress, 0, 255, 31, 0);
+            uint16_t b = 31;
+            uint16_t color = ((r & 0x1F) << 11) | ((g & 0x3F) << 5) | (b & 0x1F);
+
+            M5.Display.setTextColor(color);
+            M5.Display.setCursor(xPos + (i * 6), yPos);
+            M5.Display.print(wifiName[i]);
+        }
+    }
+
+    // Draw menu list - Size 2 (5px margin below AP name)
+    M5.Display.setTextSize(2);
+    // AP line: 34 (text top) + 8 (text height) = 42, then 5px gap = 47
+    int yStart = 47;
+    int rowHeight = 22;
 
     // Calculate scroll offset to keep selected item visible
     int scrollOffset = 0;
@@ -480,20 +583,20 @@ void drawPortalDeck() {
         int yPos = yStart + (i * rowHeight) + scrollOffset;
 
         // Only draw if visible on screen
-        if (yPos >= 30 && yPos < 135) {
+        if (yPos >= 40 && yPos < 135) {
             // Highlight selected item
             if (i == selectedMenuIndex) {
                 // Settings gets yellow highlight, others get blue
-                if (i == 3) {
-                    M5.Display.fillRoundRect(5, yPos - 3, 230, 28, 3, COLOR_YELLOW);
+                if (i == 2) {  // Settings is index 2
+                    M5.Display.fillRoundRect(5, yPos - 2, 230, 20, 3, COLOR_YELLOW);
                     M5.Display.setTextColor(COLOR_BLACK);
                 } else {
-                    M5.Display.fillRoundRect(5, yPos - 3, 230, 28, 3, COLOR_BLUE);
+                    M5.Display.fillRoundRect(5, yPos - 2, 230, 20, 3, COLOR_BLUE);
                     M5.Display.setTextColor(COLOR_WHITE);
                 }
             } else {
-                // Settings option is yellow, others are gray
-                if (i == 3) {  // Settings is the 4th item (index 3)
+                // Settings is yellow when not selected, others are gray
+                if (i == 2) {
                     M5.Display.setTextColor(COLOR_YELLOW);
                 } else {
                     M5.Display.setTextColor(COLOR_LIGHTGRAY);
@@ -505,107 +608,82 @@ void drawPortalDeck() {
             if (name.length() > 15) {
                 name = name.substring(0, 15) + "..";
             }
-            M5.Display.setCursor(10, yPos);
+            M5.Display.setCursor(20, yPos);  // Move right to x=20
             M5.Display.println(name);
 
-            // Draw star emoji for Settings (bigger, bottom right, aligned with text)
-            if (i == 3) {  // Settings is index 3
-                int starX = 192;  // Right side (near original position)
-                int starY = yPos - 5;  // Center vertically in highlight box (28px box, 32px star)
+            // Draw star emoji for Settings (right-aligned, 1x native size)
+            if (i == 2) {  // Settings is index 2
+                int starX = 224;  // Right-aligned
+                int starY = yPos + 8;  // Center vertically with text
 
-                // Draw 16x16 star scaled 2x (32x32 total)
-                uint16_t starBuffer[16];
+                // Draw yellow star upright (1x size = 16x16 native) with black outline
                 for (int sy = 0; sy < 16; sy++) {
                     for (int sx = 0; sx < 16; sx++) {
-                        starBuffer[sx] = pgm_read_word(&STAR_EMOJI_DATA[sy * 16 + sx]);
-                    }
-                    // Draw 2x2 blocks
-                    for (int scale_y = 0; scale_y < 2; scale_y++) {
-                        for (int sx = 0; sx < 16; sx++) {
-                            if (starBuffer[sx] != STAR_TRANSPARENT) {
-                                M5.Display.fillRect(starX + (sx * 2), starY + (sy * 2) + scale_y, 2, 1, starBuffer[sx]);
+                        uint16_t pixelColor = pgm_read_word(&STAR_EMOJI_DATA[sy * 16 + sx]);
+                        if (pixelColor != STAR_TRANSPARENT) {
+                            // Keep black outline, fill with yellow
+                            if (pixelColor != COLOR_BLACK) {
+                                pixelColor = COLOR_YELLOW;
                             }
+                            // Draw single pixel (native 16x16 size)
+                            M5.Display.drawPixel(starX - 8 + sx, starY - 8 + sy, pixelColor);
                         }
                     }
                 }
             }
         }
     }
-
-    // Draw WiFi status dot
-    drawWiFiStatusDot();
 }
 
 void drawSettings() {
     M5.Display.fillScreen(COLOR_BLACK);
+
+    // Settings list - scrollable list showing all items
     M5.Display.setTextSize(2);
+    int yStart = 10;
+    int rowHeight = 24;
 
-    // Title: "SETTINGS"
-    M5.Display.setTextColor(COLOR_YELLOW);
-    M5.Display.setCursor(60, 8);
-    M5.Display.println("SETTINGS");
+    // Total of 5 settings (0-4): WiFi, Sound, Dim, Update, Files
+    const char* settingNames[5] = {"WiFi", "Sound/Buzz", "Dim", "Update", "Files"};
 
-    // Settings list - BIG TEXT like main menu
-    M5.Display.setTextSize(2);
-    int yStart = 40;
-    int rowHeight = 25;
+    // Draw all 5 items (should fit in 135px height: 10 + 5*24 = 130px)
+    for (int i = 0; i < 5; i++) {
+        int yPos = yStart + (i * rowHeight);
 
-    // Setting 0: WiFi
-    int yPos0 = yStart;
-    if (selectedSettingIndex == 0) {
-        M5.Display.fillRoundRect(5, yPos0 - 3, 230, 22, 3, COLOR_BLUE);
-        M5.Display.setTextColor(COLOR_WHITE);
-    } else {
-        M5.Display.setTextColor(COLOR_LIGHTGRAY);
+        // Highlight selected item
+        if (i == selectedSettingIndex) {
+            M5.Display.fillRoundRect(5, yPos - 2, 230, 20, 3, COLOR_BLUE);
+            M5.Display.setTextColor(COLOR_WHITE);
+        } else {
+            M5.Display.setTextColor(COLOR_LIGHTGRAY);
+        }
+
+        M5.Display.setCursor(10, yPos);
+
+        // Setting-specific rendering
+        if (i == 0) {  // WiFi
+            M5.Display.println("WiFi");
+        } else if (i == 1) {  // Sound/Buzz
+            M5.Display.print("Sound ");
+            M5.Display.setTextColor(buzzEnabled ? COLOR_YELLOW : COLOR_RED);
+            M5.Display.println(buzzEnabled ? "ON" : "OFF");
+        } else if (i == 2) {  // Dim
+            M5.Display.print("Dim ");
+            int batteryLevel = M5.Power.getBatteryLevel();
+            if (batteryLevel < 20) {
+                M5.Display.setTextColor(COLOR_RED);
+                M5.Display.println("LoBat");
+            } else {
+                M5.Display.setTextColor(dimEnabled ? COLOR_YELLOW : COLOR_RED);
+                M5.Display.println(dimEnabled ? "ON" : "OFF");
+            }
+        } else if (i == 3) {  // Update
+            M5.Display.print("Update v");
+            M5.Display.println(FIRMWARE_VERSION);
+        } else if (i == 4) {  // Files
+            M5.Display.println("Files");
+        }
     }
-    M5.Display.setCursor(10, yPos0);
-    M5.Display.println("WiFi");
-
-    // Setting 1: Sound/Buzz
-    int yPos1 = yStart + rowHeight;
-    if (selectedSettingIndex == 1) {
-        M5.Display.fillRoundRect(5, yPos1 - 3, 230, 22, 3, COLOR_BLUE);
-        M5.Display.setTextColor(COLOR_WHITE);
-    } else {
-        M5.Display.setTextColor(COLOR_LIGHTGRAY);
-    }
-    M5.Display.setCursor(10, yPos1);
-    M5.Display.print("Sound/Buzz ");
-    M5.Display.setTextColor(buzzEnabled ? COLOR_YELLOW : COLOR_RED);
-    M5.Display.println(buzzEnabled ? "ON" : "OFF");
-
-    // Setting 2: Dim
-    int yPos2 = yStart + (2 * rowHeight);
-    if (selectedSettingIndex == 2) {
-        M5.Display.fillRoundRect(5, yPos2 - 3, 230, 22, 3, COLOR_BLUE);
-        M5.Display.setTextColor(COLOR_WHITE);
-    } else {
-        M5.Display.setTextColor(COLOR_LIGHTGRAY);
-    }
-    M5.Display.setCursor(10, yPos2);
-    M5.Display.print("Dim ");
-
-    // Check battery level
-    int batteryLevel = M5.Power.getBatteryLevel();
-    if (batteryLevel < 20) {
-        M5.Display.setTextColor(COLOR_RED);
-        M5.Display.println("Low Batt");
-    } else {
-        M5.Display.setTextColor(dimEnabled ? COLOR_YELLOW : COLOR_RED);
-        M5.Display.println(dimEnabled ? "ON" : "OFF");
-    }
-
-    // Setting 3: Update
-    int yPos3 = yStart + (3 * rowHeight);
-    if (selectedSettingIndex == 3) {
-        M5.Display.fillRoundRect(5, yPos3 - 3, 230, 22, 3, COLOR_BLUE);
-        M5.Display.setTextColor(COLOR_WHITE);
-    } else {
-        M5.Display.setTextColor(COLOR_LIGHTGRAY);
-    }
-    M5.Display.setCursor(10, yPos3);
-    M5.Display.print("Update: v");
-    M5.Display.println(FIRMWARE_VERSION);
 
     // Draw WiFi status dot
     drawWiFiStatusDot();
@@ -664,7 +742,13 @@ void drawFiles() {
     const char* items[3] = {"/html", "/media", "README"};
     int yPositions[3] = {35, 65, 95};
 
+    // Check if any folder is expanded
+    bool anyExpanded = folderExpanded[0] || folderExpanded[1];
+
     for (int i = 0; i < 3; i++) {
+        // Skip non-selected items if a folder is expanded (to prevent overlap)
+        if (anyExpanded && i != selectedFileIndex) continue;
+
         M5.Display.setTextSize(3);
 
         // Highlight selected item with yellow background
@@ -690,19 +774,20 @@ void drawFiles() {
         // Show folder contents if expanded
         if (i < 2 && folderExpanded[i]) {
             M5.Display.setTextSize(1);
-            uint16_t contentColor = (i == selectedFileIndex) ? COLOR_BLACK : COLOR_LIGHTGRAY;
-            M5.Display.setTextColor(contentColor);
-            M5.Display.setCursor(30, yPositions[i] + 16);
+            M5.Display.setTextColor(COLOR_DARKGRAY);
+            M5.Display.setCursor(30, yPositions[i] + 22);
             M5.Display.print("(empty)");
             M5.Display.setTextSize(3);
         }
     }
 
-    // Footer info
-    M5.Display.setTextSize(1);
-    M5.Display.setTextColor(COLOR_DARKGRAY);
-    M5.Display.setCursor(5, 122);
-    M5.Display.print("Max: 100KB html, 2MB media");
+    // Footer info (only show if nothing expanded)
+    if (!anyExpanded) {
+        M5.Display.setTextSize(1);
+        M5.Display.setTextColor(COLOR_DARKGRAY);
+        M5.Display.setCursor(5, 122);
+        M5.Display.print("Max: 100KB html, 2MB media");
+    }
 }
 
 void drawPortalRunning() {
@@ -761,16 +846,28 @@ void drawPortalRunning() {
 void startWiFiSetupPortal() {
     stopWiFiSetupPortal();
 
+    Serial.println("[WiFi Setup] Starting WiFi Setup Portal...");
+
     // Start AP mode
     WiFi.mode(WIFI_AP);
+    delay(100);
+
     IPAddress local_IP(192, 168, 4, 1);
     IPAddress gateway(192, 168, 4, 1);
     IPAddress subnet(255, 255, 255, 0);
-    WiFi.softAPConfig(local_IP, gateway, subnet);
-    WiFi.softAP("Laboratory-WiFiSetup");
 
-    delay(100);
+    if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
+        Serial.println("[WiFi Setup] ERROR: softAPConfig failed!");
+    }
+
+    if (!WiFi.softAP("Laboratory-WiFiSetup")) {
+        Serial.println("[WiFi Setup] ERROR: softAP start failed!");
+    }
+
+    delay(200);
     IPAddress IP = WiFi.softAPIP();
+    Serial.println("[WiFi Setup] AP Started! SSID: Laboratory-WiFiSetup");
+    Serial.println("[WiFi Setup] IP: " + IP.toString());
 
     // Start DNS server
     wifiSetupDNS = new DNSServer();
@@ -781,6 +878,7 @@ void startWiFiSetupPortal() {
 
     // Serve main page
     wifiSetupServer->on("/", HTTP_GET, []() {
+        Serial.println("[WiFi Setup] Serving main page");
         wifiSetupServer->send_P(200, "text/html", WIFI_SETUP_HTML);
     });
 
@@ -835,7 +933,7 @@ void startWiFiSetupPortal() {
         if (WiFi.status() == WL_CONNECTED) {
             response["success"] = true;
             response["ip"] = WiFi.localIP().toString();
-            response["redirect"] = "https://laboratory.mx";
+            response["redirect"] = "/success";  // Redirect to success page
             Serial.printf("[WiFi Setup] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
 
             // Save WiFi credentials to NVS (minimal memory)
@@ -857,16 +955,130 @@ void startWiFiSetupPortal() {
         wifiSetupServer->send(200, "application/json", responseStr);
     });
 
+    // Success page - auto-redirects to laboratory.mx
+    wifiSetupServer->on("/success", HTTP_GET, []() {
+        String successHTML = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WiFi Connected!</title>
+    <link rel="stylesheet" href="https://use.typekit.net/wop7tdt.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'automate', -apple-system, sans-serif;
+            background: #000;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 500px;
+            text-align: center;
+        }
+        h1 {
+            font-size: 48px;
+            color: #FFE000;
+            margin-bottom: 20px;
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+        .checkmark {
+            font-size: 80px;
+            color: #00ff00;
+            margin-bottom: 30px;
+            animation: bounce 0.6s ease-out;
+        }
+        p {
+            font-size: 18px;
+            line-height: 1.6;
+            margin-bottom: 30px;
+            color: #ccc;
+        }
+        .url {
+            font-size: 32px;
+            font-weight: bold;
+            color: #FFE000;
+            margin: 30px 0;
+        }
+        .redirect-box {
+            background: #111;
+            border: 2px solid #00ff00;
+            border-radius: 15px;
+            padding: 25px;
+            margin-top: 30px;
+        }
+        .countdown {
+            font-size: 48px;
+            color: #00ff00;
+            margin: 20px 0;
+            font-weight: bold;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        @keyframes bounce {
+            0% { transform: scale(0); }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); }
+        }
+    </style>
+    <script>
+        let countdown = 3;
+        function updateCountdown() {
+            document.getElementById('countdown').textContent = countdown;
+            if (countdown === 0) {
+                window.location.href = 'https://laboratory.mx';
+            } else {
+                countdown--;
+                setTimeout(updateCountdown, 1000);
+            }
+        }
+        window.onload = updateCountdown;
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div class="checkmark">✓</div>
+        <h1>CONNECTED!</h1>
+        <p>Your device is now online and ready</p>
+
+        <div class="redirect-box">
+            <p style="font-size: 20px; color: #fff; margin-bottom: 10px;">Redirecting to Laboratory in</p>
+            <div class="countdown" id="countdown">3</div>
+            <div class="url">laboratory.mx</div>
+            <p style="margin-top: 20px; font-size: 14px; color: #888;">
+                If you're not redirected, <a href="https://laboratory.mx" style="color: #FFE000;">click here</a>
+            </p>
+        </div>
+
+        <p style="margin-top: 30px; font-size: 14px; color: #666;">
+            Your device will remember this WiFi network
+        </p>
+    </div>
+</body>
+</html>
+)rawliteral";
+        wifiSetupServer->send(200, "text/html", successHTML);
+    });
+
     // Catch-all for captive portal
     wifiSetupServer->onNotFound([]() {
+        Serial.println("[WiFi Setup] Catch-all triggered: " + wifiSetupServer->uri());
         wifiSetupServer->send_P(200, "text/html", WIFI_SETUP_HTML);
     });
 
     wifiSetupServer->begin();
     wifiPortalRunning = true;
 
-    Serial.println("[WiFi Setup] Portal started");
-    Serial.println("[WiFi Setup] IP: " + IP.toString());
+    Serial.println("[WiFi Setup] ===== WIFI SETUP PORTAL RUNNING =====");
+    Serial.println("[WiFi Setup] Connect to: Laboratory-WiFiSetup");
+    Serial.println("[WiFi Setup] Then visit: http://" + IP.toString());
 }
 
 void stopWiFiSetupPortal() {
@@ -939,21 +1151,73 @@ void drawWiFiPortalRunning() {
 
 // Draw WiFi status dot (persistent across screens)
 void drawWiFiStatusDot() {
-    if (!wifiAttempted) return;  // Only show after first connection attempt
-
+    // Yellow = No attempt yet, Blue = Broadcasting, Green = Connected, Red = Disconnected after connection
     uint16_t dotColor;
-    if (WiFi.status() == WL_CONNECTED) {
+
+    if (wifiPortalRunning) {
+        dotColor = COLOR_BLUE;  // Broadcasting WiFi setup portal
+    } else if (WiFi.status() == WL_CONNECTED) {
         dotColor = COLOR_GREEN;  // Connected
+    } else if (wifiAttempted) {
+        dotColor = COLOR_RED;  // Disconnected after successful connection
     } else {
-        dotColor = COLOR_RED;  // Disconnected
+        dotColor = COLOR_YELLOW;  // No connection attempted yet
     }
 
-    M5.Display.fillCircle(226, 8, 3, dotColor);  // Moved down 2px, left 2px
+    M5.Display.fillCircle(223, 9, 3, dotColor);  // Down 1px, left 3px from (226, 8)
 }
 
 // Play beep if sound enabled
 void playBeep(int frequency, int duration) {
     if (buzzEnabled) {
         M5.Speaker.tone(frequency, duration);
+    }
+}
+
+// Enter screensaver mode
+void enterScreensaver() {
+    uiState = UI_SCREENSAVER;
+    M5.Display.setBrightness(5);  // Very dim default
+    M5.Display.fillScreen(COLOR_BLACK);
+
+    // Star in center
+    starX = 120;
+    starY = 67;
+    lastStarMove = millis();
+
+    // Draw yellow star rotated 90° left (2x size = 32x32)
+    // Rotate by swapping x/y and inverting one axis
+    for (int sy = 0; sy < 16; sy++) {
+        for (int sx = 0; sx < 16; sx++) {
+            uint16_t pixelColor = pgm_read_word(&STAR_EMOJI_DATA[sy * 16 + sx]);
+            if (pixelColor != STAR_TRANSPARENT) {
+                // Replace black outline with white, fill with yellow
+                if (pixelColor == COLOR_BLACK) {
+                    pixelColor = COLOR_WHITE;
+                } else {
+                    pixelColor = COLOR_YELLOW;
+                }
+                // Rotate 90° left: (x,y) -> (y, 15-x)
+                int rotX = sy;
+                int rotY = 15 - sx;
+                // Draw 2x2 blocks
+                M5.Display.fillRect(starX - 16 + (rotX * 2), starY - 16 + (rotY * 2), 2, 2, pixelColor);
+            }
+        }
+    }
+
+    drawWiFiStatusDot();
+
+    Serial.println("[Screensaver] Activated - Twinkling yellow star");
+}
+
+// Update twinkling star screensaver (COOL - dramatic brightness flicker!)
+void updateScreensaver() {
+    if (millis() - lastStarMove > 200) {  // Every 200ms - faster flicker!
+        // Dramatic brightness flicker (twinkle effect)
+        int brightness = random(3, 25);  // Wide range from very dim to brighter
+        M5.Display.setBrightness(brightness);
+
+        lastStarMove = millis();
     }
 }

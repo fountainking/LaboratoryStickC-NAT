@@ -13,139 +13,156 @@ const char TRANSFER_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Laboratory Portal Upload</title>
+  <title>Laboratory Transfer</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="https://use.typekit.net/wop7tdt.css">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: 'Courier New', monospace;
-      padding: 20px;
-      background: #000;
-      color: #ffd700;
-      min-height: 100vh;
-    }
-    .header {
-      background: #ffd700;
+      font-family: 'automate', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding: 40px 20px;
+      background: #fff;
       color: #000;
-      border: 3px solid #ff0000;
-      border-radius: 30px;
-      padding: 15px 20px;
-      margin: 10px 0 20px 0;
-      text-align: center;
-      font-size: 24px;
-      font-weight: bold;
-      letter-spacing: 2px;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
-    .upload-section {
-      background: #222;
-      border: 3px solid #ffd700;
-      border-radius: 25px;
-      padding: 30px;
+    h1 {
+      font-size: 32px;
+      margin-bottom: 30px;
+      text-align: center;
+    }
+    .upload-box {
+      width: 100%;
+      max-width: 500px;
+      border: 3px dashed #000;
+      border-radius: 20px;
+      padding: 60px 40px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
       margin-bottom: 20px;
     }
-    .upload-section h2 {
-      color: #ff0000;
-      font-size: 24px;
-      margin-bottom: 15px;
+    .upload-box:hover {
+      border-color: #666;
+      background: #f9f9f9;
     }
-    .upload-section p {
-      color: #ffd700;
+    .upload-box.dragover {
+      border-color: #000;
+      background: #f0f0f0;
+    }
+    .upload-icon {
+      font-size: 48px;
+      margin-bottom: 20px;
+    }
+    .upload-text {
+      font-size: 18px;
+      margin-bottom: 10px;
+    }
+    .upload-subtext {
       font-size: 14px;
-      margin: 10px 0;
-    }
-    textarea {
-      width: 100%;
-      min-height: 300px;
-      background: #000;
-      color: #0f0;
-      border: 2px solid #ffd700;
-      border-radius: 10px;
-      padding: 15px;
-      font-family: 'Courier New', monospace;
-      font-size: 12px;
-      margin: 15px 0;
+      color: #666;
+      margin-bottom: 20px;
     }
     .btn {
-      background: #ffd700;
-      color: #000;
-      border: 2px solid #ff0000;
-      border-radius: 20px;
+      background: #000;
+      color: #fff;
+      border: none;
+      border-radius: 10px;
       padding: 12px 24px;
       font-size: 16px;
-      font-weight: bold;
-      font-family: 'Courier New', monospace;
+      font-family: 'automate', sans-serif;
       cursor: pointer;
-      margin: 8px 4px;
+      margin: 10px 5px;
     }
     .btn:hover {
-      background: #ff0000;
-      color: #fff;
+      background: #333;
     }
-    .btn-danger {
-      background: #ff0000;
-      color: #fff;
-      border-color: #ffd700;
-    }
-    .btn-danger:hover {
-      background: #cc0000;
+    .limits {
+      max-width: 500px;
+      text-align: center;
+      margin-top: 20px;
+      font-size: 12px;
+      color: #666;
     }
     .status {
-      background: #222;
-      border: 2px solid #ffd700;
-      border-radius: 15px;
+      margin-top: 20px;
       padding: 15px;
-      margin-top: 20px;
-      color: #0f0;
-      font-weight: bold;
+      border-radius: 10px;
       display: none;
+      max-width: 500px;
+      width: 100%;
     }
-    .current-content {
-      background: #222;
-      border: 3px solid #ff0000;
-      border-radius: 25px;
-      padding: 20px;
-      margin-top: 20px;
+    .status.success {
+      background: #d4edda;
+      color: #155724;
     }
-    .current-content h3 {
-      color: #ff0000;
-      margin-bottom: 10px;
+    .status.error {
+      background: #f8d7da;
+      color: #721c24;
+    }
+    #fileInput {
+      display: none;
     }
   </style>
 </head>
 <body>
-  <div class="header">LABORATORY PORTAL</div>
+  <h1>Laboratory Transfer</h1>
 
-  <div class="upload-section">
-    <h2>Upload Custom Portal HTML</h2>
-    <p>Paste your HTML below and upload. This will replace the default Laboratory portal.</p>
-    <p><strong>Note:</strong> StickC has limited storage (~32KB for HTML). Keep it minimal!</p>
-
-    <textarea id="htmlInput" placeholder="Paste your custom HTML here..."></textarea>
-
-    <button class="btn" onclick="uploadHTML()">Upload Portal HTML</button>
-    <button class="btn" onclick="loadDefault()">Load Default Laboratory HTML</button>
-    <button class="btn btn-danger" onclick="resetToDefault()">Reset to Default</button>
+  <div class="upload-box" id="uploadBox" onclick="document.getElementById('fileInput').click()">
+    <div class="upload-icon">⬆</div>
+    <div class="upload-text">Drag file here or click to browse</div>
+    <div class="upload-subtext">Upload HTML file</div>
+    <input type="file" id="fileInput" accept=".html" onchange="handleFile(event)">
   </div>
 
-  <div class="current-content">
-    <h3>Current Portal Size</h3>
-    <p id="portalSize">Loading...</p>
+  <button class="btn" onclick="resetToDefault()">Reset to Default</button>
+
+  <div class="limits">
+    <strong>Limits:</strong> HTML 100KB max · Media 2MB max
   </div>
 
-  <div class="status" id="status">Ready</div>
+  <div class="status" id="status"></div>
 
   <script>
-    function showStatus(msg) {
-      const status = document.getElementById('status');
-      status.textContent = msg;
-      status.style.display = 'block';
-      setTimeout(() => status.style.display = 'none', 3000);
+    const uploadBox = document.getElementById('uploadBox');
+    const fileInput = document.getElementById('fileInput');
+    const status = document.getElementById('status');
+
+    // Drag and drop handlers
+    uploadBox.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      uploadBox.classList.add('dragover');
+    });
+
+    uploadBox.addEventListener('dragleave', () => {
+      uploadBox.classList.remove('dragover');
+    });
+
+    uploadBox.addEventListener('drop', (e) => {
+      e.preventDefault();
+      uploadBox.classList.remove('dragover');
+      if (e.dataTransfer.files.length) {
+        handleFileUpload(e.dataTransfer.files[0]);
+      }
+    });
+
+    function handleFile(event) {
+      if (event.target.files.length) {
+        handleFileUpload(event.target.files[0]);
+      }
     }
 
-    async function uploadHTML() {
-      const html = document.getElementById('htmlInput').value;
+    async function handleFileUpload(file) {
+      if (!file.name.endsWith('.html')) {
+        showStatus('Error: Only .html files allowed', 'error');
+        return;
+      }
+
+      const html = await file.text();
       if (html.length === 0) {
-        showStatus('Error: HTML cannot be empty');
+        showStatus('Error: HTML file is empty', 'error');
         return;
       }
 

@@ -135,7 +135,7 @@ const char WIFI_SETUP_HTML[] PROGMEM = R"rawliteral(
 </head>
 <body>
     <div class="container">
-        <h1>WiFi Setup</h1>
+        <h1>⭐ WiFi Setup</h1>
         <div class="subtitle">Configure Laboratory WiFi</div>
 
         <div id="scanning" class="scanning">
@@ -210,10 +210,10 @@ const char WIFI_SETUP_HTML[] PROGMEM = R"rawliteral(
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
-                    showStatus('YOU\'RE CONNECTED! Redirecting...', 'success');
+                    showStatus('CONNECTED! Redirecting...', 'success');
                     setTimeout(() => {
                         window.location.href = data.redirect;
-                    }, 2000);
+                    }, 1000);
                 } else {
                     showStatus('Failed: ' + data.message, 'error');
                     document.getElementById('connectBtn').disabled = false;

@@ -5,6 +5,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <DNSServer.h>
+#include <ArduinoJson.h>
 
 // Portal state
 enum PortalState {
@@ -20,6 +21,7 @@ bool isPortalRunning();
 int getPortalVisitorCount();
 String getPortalSSID();
 IPAddress getPortalIP();
+bool isClientAuthenticated(const String& macAddress);
 
 // Portal globals
 extern PortalState portalState;
