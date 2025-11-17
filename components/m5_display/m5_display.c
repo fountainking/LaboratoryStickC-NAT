@@ -334,7 +334,29 @@ void m5_display_flush(m5_display_t *display)
     };
     lcd_data(raset, 4);
 
-    // Write RAM
+    // Write RAM - ST7789 expects big-endian RGB565, ESP32 is little-endian
+    // Byte-swap the framebuffer before transmission
     lcd_cmd(ST7789_RAMWR);
-    lcd_data((uint8_t *)display->framebuffer, LCD_WIDTH * LCD_HEIGHT * 2);
+    gpio_set_level(LCD_PIN_DC, 1);  // Data mode
+
+    // SPI transaction with byte swap flag
+    spi_transaction_t t = {
+        .length = LCD_WIDTH * LCD_HEIGHT * 16,  // bits
+        .tx_buffer = display->framebuffer,
+        .flags = SPI_TRANS_USE_TXDATA ? 0 : 0,  // No special flags needed
+    };
+
+    // Manual byte swap for endianness correction
+    uint16_t *fb = display->framebuffer;
+    int pixel_count = LCD_WIDTH * LCD_HEIGHT;
+    for (int i = 0; i < pixel_count; i++) {
+        fb[i] = __builtin_bswap16(fb[i]);
+    }
+
+    spi_device_transmit(spi_handle, &t);
+
+    // Swap back for next render
+    for (int i = 0; i < pixel_count; i++) {
+        fb[i] = __builtin_bswap16(fb[i]);
+    }
 }

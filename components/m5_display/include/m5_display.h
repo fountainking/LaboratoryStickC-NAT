@@ -20,15 +20,19 @@
 #define LCD_CMD_BITS       8
 #define LCD_PARAM_BITS     8
 
-// Color definitions (RGB565)
+// Color definitions (RGB565 - standard format)
+// ST7789 expects big-endian RGB565 over SPI
+// We'll byte-swap during transmission
 #define COLOR_BLACK   0x0000
 #define COLOR_WHITE   0xFFFF
-#define COLOR_RED     0xF800
-#define COLOR_GREEN   0x07E0
-#define COLOR_BLUE    0x001F
-#define COLOR_YELLOW  0xFFE0
-#define COLOR_CYAN    0x07FF
-#define COLOR_MAGENTA 0xF81F
+#define COLOR_RED     0xF800  // Standard RGB565
+#define COLOR_GREEN   0x07E0  // Standard RGB565
+#define COLOR_BLUE    0x001F  // Standard RGB565
+#define COLOR_YELLOW  0xFFE0  // Standard (red + green)
+#define COLOR_CYAN    0x07FF  // Standard (green + blue)
+#define COLOR_MAGENTA 0xF81F  // Standard (red + blue)
+#define COLOR_PURPLE  0x8010  // Purple
+#define COLOR_LILAC   0xC618  // Lilac
 
 // Display handle
 typedef struct {
