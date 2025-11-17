@@ -22,7 +22,7 @@ static const char LABORATORY_HTML[] =
 "<meta charset=\"UTF-8\">"
 "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
 "<title>Laboratory</title>"
-"<link rel=\"icon\" href=\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⭐</text></svg>\">"
+"<link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E⭐%3C/text%3E%3C/svg%3E\">"
 "<style>"
 "*{margin:0;padding:0;box-sizing:border-box;}"
 "body{font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,sans-serif;margin:0;padding:30px 20px;background:#f5f5f5;color:#000;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;}"
