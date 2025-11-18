@@ -4,8 +4,8 @@
 #include <stdbool.h>
 #include "esp_err.h"
 
-#define GITHUB_API_URL "https://api.github.com/repos/fountainking/LaboratoryStickC-NAT/releases/latest"
-#define FIRMWARE_VERSION "v1.0.1"
+#define GITHUB_API_URL "https://api.github.com/repos/YOUR_USERNAME/YOUR_REPO/releases/latest"
+#define FIRMWARE_VERSION "v1.0.0"
 
 /**
  * Check GitHub for new firmware release and perform OTA update if found

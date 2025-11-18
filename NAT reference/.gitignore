@@ -1,0 +1,19 @@
+# PlatformIO
+.pio/
+.vscode/
+.DS_Store
+
+# Build artifacts
+*.bin
+*.elf
+*.map
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Credentials (if any)
+credentials.h
+secrets.h

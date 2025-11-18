@@ -446,15 +446,25 @@ static void draw_portal_submenu(void)
     // Title - 15px margins
     m5_display_draw_string_scaled(&display, 15, 15, "PORTAL", COLOR_YELLOW, COLOR_BLACK, 2);
 
-    // Menu items - scale 2 font, yellow highlight with BLACK text
+    // Highlight colors for each menu item
+    // WiFi=Yellow, Lab=Orange, Transfer=Red, New=Blue
+    uint16_t highlight_colors[] = {
+        COLOR_YELLOW,   // Join WiFi
+        0xFD20,         // Laboratory (Orange - RGB565)
+        COLOR_RED,      // Transfer
+        COLOR_BLUE      // New (+)
+    };
+
+    // Menu items - scale 2 font, colored highlights with BLACK text
     int y = 40;
     for (int i = 0; i < PORTAL_MENU_COUNT; i++) {
         int text_len = strlen(portal_menu[i]);
         int text_width = text_len * 16;  // 8px * scale 2
 
         if (i == selected_portal_item) {
-            m5_display_fill_rect(&display, 0, y - 3, 240, 24, COLOR_YELLOW);
-            m5_display_draw_string_scaled(&display, 15, y, portal_menu[i], COLOR_BLACK, COLOR_YELLOW, 2);
+            uint16_t color = highlight_colors[i];
+            m5_display_fill_rect(&display, 0, y - 3, 240, 24, color);
+            m5_display_draw_string_scaled(&display, 15, y, portal_menu[i], COLOR_BLACK, color, 2);
             // Draw star aligned to right with 15px margin
             m5_display_draw_sprite(&display, 209, y, STAR_WIDTH, STAR_HEIGHT, STAR_EMOJI_DATA, STAR_TRANSPARENT);
         } else {
