@@ -20,12 +20,13 @@
 
 #include "captive_portal.h"
 #include "dns_server.h"
-#include "debug_screen.h"
-#include "log_screen.h"
+#include "portal_ui.h"
 #include "log_capture.h"
 #include "tcp_debug.h"
 #include "hardware_test.h"
 #include "axp2101_power.h"
+#include "portal_mode.h"
+#include "sound_system.h"
 
 static const char *TAG = "Laboratory";
 
@@ -95,17 +96,88 @@ static void test_internet_connectivity(void)
     esp_ping_start(ping);
 }
 
-// Mode selection: 0 = debug screen, 1 = log screen
-static int display_mode = 0;  // Use debug screen (cleaner)
+// Portal UI mode - interactive menu system
 
-#define AP_SSID "Laboratory"
+#define AP_SSID_PORTAL "Laboratory"
+#define AP_SSID_SETUP "labPORTAL Wifi Setup"
 #define AP_PASS ""  // Open network
 #define AP_CHANNEL 1
 #define AP_MAX_CONN 8
 
+// Function to start AP with specified SSID and mode
+void start_ap(const char *ssid, bool is_setup_mode)
+{
+    ESP_LOGI(TAG, "Starting AP: %s (setup_mode=%d)", ssid, is_setup_mode);
+
+    // Set global setup mode flag for HTTP server
+    setup_mode = is_setup_mode;
+
+    // Configure AP
+    wifi_config_t wifi_ap_config = {
+        .ap = {
+            .ssid = "",
+            .ssid_len = 0,
+            .channel = AP_CHANNEL,
+            .password = AP_PASS,
+            .max_connection = AP_MAX_CONN,
+            .authmode = WIFI_AUTH_OPEN
+        },
+    };
+
+    // Copy SSID
+    strcpy((char*)wifi_ap_config.ap.ssid, ssid);
+    wifi_ap_config.ap.ssid_len = strlen(ssid);
+
+    // Switch to STA+AP mode
+    esp_wifi_set_mode(WIFI_MODE_APSTA);
+    esp_wifi_set_config(WIFI_IF_AP, &wifi_ap_config);
+
+    ESP_LOGI(TAG, "✓ AP started: %s", ssid);
+
+    // Start DNS server for captive portal detection
+    dns_server_start();
+    ESP_LOGI(TAG, "✓ DNS server started");
+
+    // Start HTTP server
+    start_captive_portal();
+    ESP_LOGI(TAG, "✓ HTTP server started at http://192.168.4.1");
+    ESP_LOGI(TAG, "✓ Serving %s portal", is_setup_mode ? "SETUP" : "LABORATORY");
+}
+
+// Function to stop AP (return to STA-only mode)
+void stop_ap(void)
+{
+    ESP_LOGI(TAG, "Stopping AP...");
+
+    // Switch back to STA-only mode
+    esp_wifi_set_mode(WIFI_MODE_STA);
+
+    ESP_LOGI(TAG, "✓ AP stopped (STA-only mode)");
+}
+
 // WiFi credentials
 #define STA_SSID "ThankYouGod"
 #define STA_PASS "Pokemon1500"
+
+// Global flag: are we in setup mode? (defined in header)
+bool setup_mode = true;
+
+// Global flag: are we connected to WiFi?
+static bool wifi_connected = false;
+
+// Function to get current WiFi SSID
+const char* get_wifi_ssid(void)
+{
+    static wifi_config_t wifi_config;
+    esp_wifi_get_config(WIFI_IF_STA, &wifi_config);
+    return (const char*)wifi_config.sta.ssid;
+}
+
+// Function to check if WiFi is connected
+bool is_wifi_connected(void)
+{
+    return wifi_connected;
+}
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
@@ -115,6 +187,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGI(TAG, "Disconnected from AP, retrying...");
         tcp_debug_printf("[WIFI] STA disconnected, retrying...\r\n");
+        wifi_connected = false;
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STACONNECTED) {
         wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
@@ -124,6 +197,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         tcp_debug_printf("[AP] Client connected: %02x:%02x:%02x:%02x:%02x:%02x\r\n",
                  event->mac[0], event->mac[1], event->mac[2],
                  event->mac[3], event->mac[4], event->mac[5]);
+        sound_system_play(SOUND_SUCCESS);  // Success beep for client connection
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STADISCONNECTED) {
         wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
         ESP_LOGI(TAG, "Client disconnected from AP - MAC: %02x:%02x:%02x:%02x:%02x:%02x",
@@ -138,6 +212,8 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "Gateway: " IPSTR, IP2STR(&event->ip_info.gw));
         ESP_LOGI(TAG, "Netmask: " IPSTR, IP2STR(&event->ip_info.netmask));
         tcp_debug_printf("[NAT] STA got IP: " IPSTR "\r\n", IP2STR(&event->ip_info.ip));
+        wifi_connected = true;
+        sound_system_play(SOUND_SUCCESS);  // Success beep for internet connection
 
         // ENABLE NAT - Masquerade AP subnet (192.168.4.0/24) through STA interface
         ESP_LOGI(TAG, "Enabling NAT on AP netif (192.168.4.0/24 -> STA)");
@@ -157,8 +233,8 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         vTaskDelay(pdMS_TO_TICKS(2000));  // Wait 2s for routing to settle
         test_internet_connectivity();
 
-        // Disable captive portal hijacking - let iOS/Android see real internet
-        dns_set_captive_mode(false);
+        // Keep captive portal active so popup triggers
+        // dns_set_captive_mode(false);  // Commented out - need popup to work!
 
         // Start TCP debug server after we have IP
         tcp_debug_init();
@@ -245,13 +321,23 @@ void app_main(void)
         strcpy((char*)wifi_sta_config.sta.ssid, STA_SSID);
         strcpy((char*)wifi_sta_config.sta.password, STA_PASS);
         ESP_LOGI(TAG, "Using hardcoded WiFi credentials: %s", STA_SSID);
+        setup_mode = false; // We have hardcoded creds, not in setup mode
+    } else {
+        setup_mode = false; // We have saved creds, not in setup mode
     }
 
-    // Configure AP mode
+    // If WiFi SSID is empty, we're in setup mode
+    if (strlen((char*)wifi_sta_config.sta.ssid) == 0) {
+        setup_mode = true;
+        ESP_LOGI(TAG, "No WiFi configured - entering SETUP MODE");
+    }
+
+    // Configure AP mode - use different SSID based on setup mode
+    const char *ap_ssid = setup_mode ? AP_SSID_SETUP : AP_SSID_PORTAL;
     wifi_config_t wifi_ap_config = {
         .ap = {
-            .ssid = AP_SSID,
-            .ssid_len = strlen(AP_SSID),
+            .ssid = "",
+            .ssid_len = 0,
             .channel = AP_CHANNEL,
             .password = AP_PASS,
             .max_connection = AP_MAX_CONN,
@@ -259,9 +345,13 @@ void app_main(void)
         },
     };
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    // Copy SSID
+    strcpy((char*)wifi_ap_config.ap.ssid, ap_ssid);
+    wifi_ap_config.ap.ssid_len = strlen(ap_ssid);
+
+    // Start in STA-only mode (no AP broadcast at boot)
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_sta_config));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_ap_config));
 
     // Disable WiFi power management to prevent sleep/cutoff on battery
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
@@ -269,32 +359,21 @@ void app_main(void)
 
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "WiFi started - AP: %s, connecting to STA: %s", AP_SSID, STA_SSID);
-    ESP_LOGI(TAG, "Waiting for STA connection to enable NAT...");
+    ESP_LOGI(TAG, "WiFi started in STA mode (no AP broadcasting)");
+    ESP_LOGI(TAG, "Connecting to STA: %s",
+             strlen((char*)wifi_sta_config.sta.ssid) > 0 ? (char*)wifi_sta_config.sta.ssid : "[NONE]");
 
-    // Initialize display based on mode
-    if (display_mode == 0) {
-        debug_screen_init();
-        ESP_LOGI(TAG, "Starting in DEBUG screen mode");
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        xTaskCreate(debug_screen_task, "debug_screen", 4096, NULL, 5, NULL);
-    } else {
-        log_screen_init();
-        ESP_LOGI(TAG, "Starting in LOG screen mode");
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        xTaskCreate(log_screen_task, "log_screen", 4096, NULL, 5, NULL);
-    }
+    // Initialize sound system
+    sound_system_init();
+    ESP_LOGI(TAG, "Sound system initialized");
 
-    // Start DNS hijack server (triggers captive portal popup)
-    dns_server_start();
-
-    // Start captive portal (includes HTTP log endpoints)
-    start_captive_portal();
+    // Initialize Portal UI
+    portal_ui_init();
+    ESP_LOGI(TAG, "Portal UI initialized");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    portal_ui_start();
+    ESP_LOGI(TAG, "Portal UI started");
 
     ESP_LOGI(TAG, "=== System Ready ===");
-    ESP_LOGI(TAG, "DNS server: Hijacking all queries -> 192.168.4.1");
-    ESP_LOGI(TAG, "HTTP endpoints:");
-    ESP_LOGI(TAG, "  http://192.168.4.1/           - Portal page");
-    ESP_LOGI(TAG, "  http://192.168.4.1/debug/logs - All logs");
-    ESP_LOGI(TAG, "  http://192.168.4.1/debug/recent?lines=20 - Recent logs");
+    ESP_LOGI(TAG, "DNS and HTTP will start when AP is launched from menu");
 }

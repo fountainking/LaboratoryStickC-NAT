@@ -34,6 +34,7 @@
 #define COLOR_MAGENTA 0xF81F  // Standard (red + blue)
 #define COLOR_PURPLE  0x8010  // Purple
 #define COLOR_LILAC   0xC618  // Lilac
+#define COLOR_LIGHT_YELLOW 0xFFD4  // Light yellow - RGB565(31, 63, 20)
 
 // Display handle
 typedef struct {

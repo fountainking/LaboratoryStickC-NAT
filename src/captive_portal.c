@@ -1,6 +1,7 @@
 #include "captive_portal.h"
 #include "log_capture.h"
 #include "ota_manager.h"
+#include "portal_mode.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "esp_ota_ops.h"
@@ -14,109 +15,101 @@ static const char *TAG = "Portal";
 // Buffer for serving logs (16KB should be plenty)
 #define LOG_RESPONSE_BUFFER_SIZE (16 * 1024)
 
-// Laboratory portal HTML with WiFi setup
+// WiFi Setup Portal - Shown when device needs configuration
+static const char SETUP_PORTAL_HTML[] =
+"<!DOCTYPE html>"
+"<html>"
+"<head>"
+"<meta charset=\"UTF-8\">"
+"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1.0\">"
+"<title>labPORTAL WiFi Setup</title>"
+"<style>"
+"*{margin:0;padding:0;box-sizing:border-box;}"
+"body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:30px 20px;background:#000;color:#fff;min-height:100vh;}"
+".container{max-width:600px;margin:0 auto;}"
+"h1{color:#f5c429;text-align:center;margin-bottom:30px;font-size:2em;}"
+".info{background:rgba(245,196,41,0.1);border:2px solid #f5c429;border-radius:20px;padding:30px;margin:30px 0;text-align:center;}"
+".info p{line-height:1.8;font-size:1.2em;margin:10px 0;}"
+".cta-button{display:block;background:#f5c429;color:#000;border:3px solid #f5c429;border-radius:50px;padding:18px 40px;font-size:1.3em;font-weight:bold;text-align:center;margin:20px auto;max-width:350px;cursor:pointer;text-decoration:none;}"
+".cta-button:hover{background:#FFE000;border-color:#FFE000;}"
+"</style>"
+"</head>"
+"<body>"
+"<div class=\"container\">"
+"<h1>labPORTAL WiFi Setup</h1>"
+"<div class=\"info\">"
+"<p><strong>Welcome!</strong></p>"
+"<p>Configure your internet connection to enable the NAT bridge and share WiFi with visitors.</p>"
+"</div>"
+"<a href=\"/wifi\" class=\"cta-button\">CONFIGURE WIFI</a>"
+"</div>"
+"</body>"
+"</html>";
+
+// Laboratory Portal - Official design with NAT connectivity testing
 static const char LABORATORY_HTML[] =
 "<!DOCTYPE html>"
 "<html>"
 "<head>"
 "<meta charset=\"UTF-8\">"
-"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
+"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1.0\">"
+"<meta http-equiv=\"Cache-Control\" content=\"no-cache,no-store,must-revalidate\">"
 "<title>Laboratory</title>"
-"<link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E⭐%3C/text%3E%3C/svg%3E\">"
 "<style>"
 "*{margin:0;padding:0;box-sizing:border-box;}"
-"body{font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,sans-serif;margin:0;padding:30px 20px;background:#f5f5f5;color:#000;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;}"
+"body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:30px 20px;background:#f5f5f5;color:#000;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;}"
 ".frame{max-width:600px;width:100%;background:#fff;border:3px solid #000;border-radius:40px;padding:35px 40px;margin-bottom:30px;}"
-".description{text-align:center;line-height:1.7;font-size:1.05em;color:#000;}"
-"input,select{width:100%;padding:12px;margin:10px 0;border:2px solid #000;border-radius:10px;font-size:1em;font-family:inherit;}"
-"button{width:100%;padding:15px;background:#000;color:#fff;border:none;border-radius:10px;font-size:1.1em;cursor:pointer;margin-top:10px;font-family:inherit;}"
-"button:hover{background:#333;}"
-"button.secondary{background:#fff;color:#000;border:2px solid #000;}"
-"button.secondary:hover{background:#f5f5f5;}"
-".status{text-align:center;margin-top:15px;font-weight:bold;padding:15px;border-radius:10px;}"
-".status.success{background:#d4edda;color:#155724;border:2px solid #28a745;}"
-".status.connecting{background:#fff3cd;color:#856404;border:2px solid #ffc107;}"
-".cta-button{display:block;background:#fff;color:#000;border:3px solid #000;border-radius:50px;padding:15px 40px;font-size:1.1em;font-weight:bold;text-align:center;margin:20px auto;max-width:350px;cursor:pointer;text-decoration:none;}"
+".logo-container{max-width:600px;width:100%;display:flex;justify-content:center;align-items:center;margin-bottom:30px;}"
+".logo-container svg{width:100%;max-width:400px;height:auto;}"
+".description{text-align:center;line-height:1.7;font-size:1.2em;color:#000;}"
+".recruiting-section{max-width:600px;width:100%;text-align:center;margin-bottom:30px;}"
+".recruiting{text-align:center;margin:0 0 20px 0;font-size:1.2em;color:#000;line-height:1.6;}"
+".cta-button{display:block;background:#fff;color:#000;border:3px solid #000;border-radius:50px;padding:18px 40px;font-size:1.3em;text-align:center;margin:15px auto;max-width:350px;cursor:pointer;text-decoration:none;}"
 ".cta-button:hover{background:#f5f5f5;}"
-".network{padding:12px;margin:8px 0;border:2px solid #000;border-radius:10px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;}"
-".network:hover{background:#f5f5f5;}"
-".network.selected{background:#000;color:#fff;}"
-"h1{text-align:center;font-size:2.5em;margin-bottom:20px;}"
-"h2{text-align:center;font-size:1.5em;margin-bottom:15px;}"
-"#networks{max-height:300px;overflow-y:auto;margin:10px 0;}"
-".loading{text-align:center;padding:20px;}"
+".cta-button:active{background:#e0e0e0;}"
 "</style>"
 "</head>"
 "<body>"
-"<h1>LABORATORY</h1>"
+"<div class=\"logo-container\">"
+"<svg viewBox=\"0 0 379 96.1\" xmlns=\"http://www.w3.org/2000/svg\">"
+"<defs><style>.st0{fill:#f5c429;stroke-width:4px}.st0,.st1{stroke:#000;stroke-miterlimit:10}.st2{fill:#fff}</style></defs>"
+"<g><rect class=\"st2\" x=\"6\" y=\"6\" width=\"367\" height=\"84\" rx=\"42\" ry=\"42\"/>"
+"<path d=\"M12,48c0-19.9,16.4-35.8,36.1-36s8.7,0,13.1,0c24.2,0,48.5,0,72.7,0,32.8,0,65.6,0,98.4,0,26.3,0,52.6,0,79,0s12.1,0,18.1,0c14.4,0,27.5,7.1,34,20.3,9.9,20-1.8,44.9-23.3,50.5-5.6,1.5-11.5,1.2-17.2,1.2h-66.9c-32.4,0-64.8,0-97.2,0s-55.9,0-83.8,0c-16.4,0-36.6,3-50-8.4-8.2-6.9-12.7-16.9-12.9-27.6S-.1,40.3,0,48c.4,24.5,18.7,45.1,43.2,47.7s10.2.3,15.2.3c24.7,0,49.4,0,74.1,0h102.7c26.7,0,53.3,0,80,0,5.2,0,10.3,0,15.5,0,20.4-.2,38.4-12.7,45.5-31.9,8.2-22.2-2.3-48.3-23.5-58.9S334.8,0,325.2,0h-67c-34,0-67.9,0-101.9,0h-85.9c-6.8,0-13.6,0-20.5,0-15,0-29.3,5.6-39,17.4S0,36.9,0,48s12,7.7,12,0Z\"/></g>"
+"<g><g><path class=\"st1\" d=\"M47.8,59.8c1,0,1.4.8,1.4,1.7s-.5,1.7-1.4,1.7h-16.1v-28.3c0-1,.9-1.4,1.9-1.4s1.9.5,1.9,1.4v24.8h12.4Z\"/>"
+"<path class=\"st1\" d=\"M75.6,62.1c0,1-.8,1.5-1.8,1.5s-1.9-.5-1.9-1.5v-8.5h-14v8.5c0,1-.8,1.5-1.8,1.5s-1.8-.5-1.8-1.5v-16.5c0-2.2.5-3.9,2.2-5.6l5.9-5.8c.5-.5,1.3-.9,2.5-.9s2,.5,2.5.9l6,5.8c1.7,1.6,2.2,3.3,2.2,5.6v16.5ZM72,50.4v-4.6c0-1.5-.3-2.5-1.4-3.5l-5.7-5.5-5.7,5.5c-1.1,1.1-1.4,2-1.4,3.5v4.6h14.1Z\"/>"
+"<path class=\"st1\" d=\"M103.2,56.2c0,4.4-2.5,7.2-7.4,7.2h-12.9v-29.5h12.9c4.4,0,7.3,3,7.3,7.2v2.1c0,3-1.2,4.5-2.7,5.3,1.6.7,2.8,2.7,2.8,5v2.8ZM96.3,46.8c2.2,0,3.1-.8,3.1-3.7v-2.4c0-2.2-1.4-3.5-3.4-3.5h-9.6v9.6h9.9ZM95.7,60.2c2.4,0,3.8-1.2,3.8-3.5v-2.7c0-2.7-1.1-3.8-3-3.8h-10.2v10.1h9.3Z\"/>"
+"<path d=\"M131.9,56.3c0,4-3.2,7.3-7.6,7.3h-6.8c-4.4,0-7.6-3.2-7.6-7.3v-15.3c0-4.1,3.4-7.3,7.4-7.3h7.1c4.2,0,7.5,3.2,7.5,7.3v15.3ZM124.7,60.1c2.2,0,3.7-1.7,3.7-3.5v-15.9c0-1.9-1.6-3.5-3.5-3.5h-7.8c-2.1,0-3.5,1.6-3.5,3.5v15.9c0,1.9,1.5,3.5,3.7,3.5h7.5Z\"/>"
+"<path d=\"M159.6,62.1c0,1-.8,1.5-1.8,1.5s-1.9-.5-1.9-1.5v-8c0-2.4-1.3-3.7-3.5-3.7h-9.6v11.7c0,1-.8,1.5-1.7,1.5s-1.8-.5-1.8-1.5v-28.4h13.2c4.1,0,7.1,2.9,7.1,7v2.8c0,2.9-1.4,4.9-3.1,5.7,1.7.6,3.1,2.5,3.1,4.7v8.3ZM152.8,47.1c2.2,0,3.3-1.2,3.3-3.3v-3.5c0-2-1.3-3.2-3.2-3.2h-10.1v10h10Z\"/>"
+"<path d=\"M187.7,62.1c0,1-.8,1.5-1.8,1.5s-1.9-.5-1.9-1.5v-8.5h-14v8.5c0,1-.8,1.5-1.8,1.5s-1.8-.5-1.8-1.5v-16.5c0-2.2.5-3.9,2.2-5.6l5.9-5.8c.5-.5,1.3-.9,2.5-.9s2,.5,2.5.9l6,5.8c1.7,1.6,2.2,3.3,2.2,5.6v16.5ZM184.1,50.4v-4.6c0-1.5-.3-2.5-1.4-3.5l-5.7-5.5-5.7,5.5c-1.1,1.1-1.4,2-1.4,3.5v4.6h14.1Z\"/>"
+"<path d=\"M205.8,62.1c0,1-.9,1.5-1.9,1.5s-2-.5-2-1.5v-24.7h-7.8c-1,0-1.4-.7-1.4-1.7s.5-1.8,1.4-1.8h19.5c1,0,1.5.8,1.5,1.8s-.5,1.7-1.5,1.7h-7.8v24.7Z\"/>"
+"<path d=\"M241.5,56.3c0,4-3.2,7.3-7.6,7.3h-6.8c-4.4,0-7.6-3.2-7.6-7.3v-15.3c0-4.1,3.4-7.3,7.4-7.3h7.1c4.2,0,7.5,3.2,7.5,7.3v15.3ZM234.3,60.1c2.2,0,3.7-1.7,3.7-3.5v-15.9c0-1.9-1.6-3.5-3.5-3.5h-7.8c-2.1,0-3.5,1.6-3.5,3.5v15.9c0,1.9,1.5,3.5,3.7,3.5h7.5Z\"/>"
+"<path d=\"M269.2,62.1c0,1-.8,1.5-1.8,1.5s-1.9-.5-1.9-1.5v-8c0-2.4-1.3-3.7-3.5-3.7h-9.6v11.7c0,1-.8,1.5-1.7,1.5s-1.8-.5-1.8-1.5v-28.4h13.2c4.1,0,7.1,2.9,7.1,7v2.8c0,2.9-1.3,4.9-3.1,5.7,1.7.6,3.1,2.5,3.1,4.7v8.3ZM262.4,47.1c2.2,0,3.3-1.2,3.3-3.3v-3.5c0-2-1.3-3.2-3.2-3.2h-10.1v10h10Z\"/>"
+"<path d=\"M287.7,62.1c0,1-.8,1.5-1.8,1.5s-1.9-.5-1.9-1.5v-9.9l-7-6.4c-1.1-1.1-1.7-2.6-1.7-4.5v-6.3c0-1,.8-1.4,1.8-1.4s1.8.5,1.8,1.4v6.1c0,1.2,0,1.9.8,2.5l5.7,5.2h.7l5.7-5.2c.7-.6.9-1.3.9-2.5v-6.1c0-1,.8-1.4,1.8-1.4s1.8.5,1.8,1.4v6.3c0,2-.3,3.2-1.7,4.5l-7,6.4v9.9Z\"/></g>"
+"<path class=\"st0\" d=\"M330.7,26.9l5,10.2c.4.8,1.2,1.4,2,1.5l11.2,1.6c2.2.3,3.1,3.1,1.5,4.6l-8.1,7.9c-.6.6-.9,1.5-.8,2.4l1.9,11.2c.4,2.2-1.9,3.9-3.9,2.9l-10-5.3c-.8-.4-1.7-.4-2.5,0l-10,5.3c-2,1-4.3-.6-3.9-2.9l1.9-11.2c.2-.9-.1-1.8-.8-2.4l-8.1-7.9c-1.6-1.6-.7-4.3,1.5-4.6l11.2-1.6c.9-.1,1.6-.7,2-1.5l5-10.2c1-2,3.9-2,4.9,0Z\"/></g>"
+"</svg>"
+"</div>"
 "<div class=\"frame\">"
-"<h2>WiFi Setup</h2>"
-"<div id='scanView'>"
-"<button onclick='scanNetworks()' class='secondary'>🔍 Scan for Networks</button>"
-"<div id='networks'></div>"
+"<div class=\"description\">"
+"<strong>Laboratory</strong> is a workforce economic program centered around entrepreneurship that offers physical classrooms, retail store fronts, and content production studios designed to improve economic outcomes by addressing the skills, training, and opportunities individuals need to succeed."
 "</div>"
-"<form id='wifiForm' style='display:none;'>"
-"<div id='selectedNetwork' style='margin:10px 0;font-weight:bold;'></div>"
-"<input type='password' name='password' placeholder='WiFi Password' required>"
-"<button type='submit'>Connect</button>"
-"<button type='button' onclick='showScan()' class='secondary' style='margin-top:5px;'>Cancel</button>"
-"</form>"
-"<div class='status' id='status'></div>"
 "</div>"
-"<a href='/update' class='cta-button'>📡 OTA Update</a>"
-"<a href='https://laboratory.mx' class='cta-button'>Visit Laboratory.mx</a>"
-"<script>"
-"let selectedSSID = '';"
-"async function scanNetworks() {"
-"  document.getElementById('networks').innerHTML = '<div class=\"loading\">Scanning...</div>';"
-"  const res = await fetch('/wifi/scan');"
-"  const networks = await res.json();"
-"  let html = '';"
-"  networks.forEach(net => {"
-"    html += `<div class='network' onclick='selectNetwork(\"${net.ssid}\",${net.auth})'><span>${net.ssid}</span><span>${net.rssi} dBm ${net.auth ? '🔒' : ''}</span></div>`;"
-"  });"
-"  document.getElementById('networks').innerHTML = html || '<div class=\"loading\">No networks found</div>';"
-"}"
-"function selectNetwork(ssid, needsAuth) {"
-"  selectedSSID = ssid;"
-"  if (!needsAuth) {"
-"    connectWiFi(ssid, '');"
-"  } else {"
-"    document.getElementById('scanView').style.display = 'none';"
-"    document.getElementById('wifiForm').style.display = 'block';"
-"    document.getElementById('selectedNetwork').textContent = 'Network: ' + ssid;"
-"    document.querySelector('[name=password]').value = '';"
-"    document.querySelector('[name=password]').focus();"
-"  }"
-"}"
-"function showScan() {"
-"  document.getElementById('scanView').style.display = 'block';"
-"  document.getElementById('wifiForm').style.display = 'none';"
-"}"
-"async function connectWiFi(ssid, password) {"
-"  const data = 'ssid=' + encodeURIComponent(ssid) + '&password=' + encodeURIComponent(password);"
-"  const status = document.getElementById('status');"
-"  status.textContent = 'Connecting...';"
-"  status.className = 'status connecting';"
-"  const response = await fetch('/wifi/connect', { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: data });"
-"  const result = await response.text();"
-"  status.textContent = result;"
-"  status.className = 'status success';"
-"}"
-"document.getElementById('wifiForm').onsubmit = async (e) => {"
-"  e.preventDefault();"
-"  const password = e.target.password.value;"
-"  connectWiFi(selectedSSID, password);"
-"};"
-"window.onload = () => scanNetworks();"
-"</script>"
+"<div class=\"recruiting-section\">"
+"<div class=\"recruiting\">"
+"We're recruiting for our<br>"
+"<strong>*EXPERT COMMITTEE*</strong><br>"
+"If you know anything about<br>"
+"being an entreprenuer:"
+"</div>"
+"<a href=\"mailto:info@laboratory.mx?subject=Expert%20Committee%20Inquiry&body=Hi%20Laboratory%20Team%2C%0A%0AI'm%20interested%20in%20joining%20the%20Expert%20Committee.\" class=\"cta-button\">JOIN THE MISSION!</a>"
+"</div>"
 "</body>"
 "</html>";
 
-// Root handler - serves the Laboratory portal
+// Root handler - serves the appropriate portal based on mode
 static esp_err_t root_handler(httpd_req_t *req)
 {
-    httpd_resp_send(req, LABORATORY_HTML, HTTPD_RESP_USE_STRLEN);
+    const char *html = setup_mode ? SETUP_PORTAL_HTML : LABORATORY_HTML;
+    httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
@@ -361,7 +354,148 @@ static const httpd_uri_t ota_page_uri = {
     .user_ctx  = NULL
 };
 
-// WiFi connect handler - saves credentials and reconnects STA
+// WiFi settings page - simple, clean interface
+static esp_err_t wifi_page_handler(httpd_req_t *req)
+{
+    const char* wifi_html =
+    "<!DOCTYPE html><html><head>"
+    "<meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>"
+    "<title>WiFi Settings</title>"
+    "<link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E⭐%3C/text%3E%3C/svg%3E\">"
+    "<style>"
+    "*{margin:0;padding:0;box-sizing:border-box;}"
+    "body{font-family:-apple-system,sans-serif;background:#000;color:#fff;padding:20px;min-height:100vh;}"
+    ".container{max-width:500px;margin:0 auto;}"
+    "h1{color:#FFE000;text-align:center;margin-bottom:30px;font-size:2em;}"
+    "button{width:100%;padding:15px;background:#FFE000;color:#000;border:none;border-radius:10px;font-size:1.1em;cursor:pointer;margin:10px 0;font-weight:bold;}"
+    "button:hover{background:#fff;}"
+    ".network{background:rgba(255,255,255,0.1);padding:15px;margin:10px 0;border-radius:10px;cursor:pointer;display:flex;justify-content:space-between;}"
+    ".network:hover{background:rgba(255,224,0,0.2);}"
+    "#networks{margin:20px 0;max-height:400px;overflow-y:auto;}"
+    ".status{text-align:center;padding:15px;margin:15px 0;border-radius:10px;background:rgba(255,224,0,0.2);color:#FFE000;font-weight:bold;}"
+    "input{width:100%;padding:12px;margin:10px 0;border:2px solid #FFE000;border-radius:8px;font-size:1em;background:#000;color:#fff;}"
+    ".back{background:transparent;border:2px solid #FFE000;color:#FFE000;}"
+    ".back:hover{background:rgba(255,224,0,0.1);}"
+    "</style>"
+    "</head><body>"
+    "<div class='container'>"
+    "<h1>⚙️ WiFi Settings</h1>"
+    "<div id='scanView'>"
+    "<button onclick='scanNetworks()'>🔍 Scan for Networks</button>"
+    "<div id='networks'></div>"
+    "</div>"
+    "<div id='formView' style='display:none;'>"
+    "<div id='selectedNetwork' style='margin:10px 0;font-weight:bold;color:#FFE000;'></div>"
+    "<input type='password' id='password' placeholder='WiFi Password'>"
+    "<button onclick='connect()'>Connect</button>"
+    "<button class='back' onclick='showScan()'>Cancel</button>"
+    "</div>"
+    "<div class='status' id='status' style='display:none;'></div>"
+    "<button class='back' onclick='location.href=\"/\"' style='margin-top:20px;'>← Back to Portal</button>"
+    "</div>"
+    "<script>"
+    "let selectedSSID='';"
+    "async function scanNetworks(){"
+    "  document.getElementById('networks').innerHTML='<div class=\"status\">Scanning...</div>';"
+    "  const res=await fetch('/wifi/scan');"
+    "  const networks=await res.json();"
+    "  let html='';"
+    "  networks.forEach(n=>{"
+    "    html+=`<div class='network' onclick='select(\"${n.ssid}\",${n.auth})'><span>${n.ssid}</span><span>${n.rssi}dBm ${n.auth?'🔒':''}</span></div>`;"
+    "  });"
+    "  document.getElementById('networks').innerHTML=html||'<div class=\"status\">No networks found</div>';"
+    "}"
+    "function select(ssid,auth){"
+    "  selectedSSID=ssid;"
+    "  if(!auth){connect();}else{"
+    "    document.getElementById('scanView').style.display='none';"
+    "    document.getElementById('formView').style.display='block';"
+    "    document.getElementById('selectedNetwork').textContent='Network: '+ssid;"
+    "    document.getElementById('password').value='';"
+    "    document.getElementById('password').focus();"
+    "  }"
+    "}"
+    "function showScan(){"
+    "  document.getElementById('scanView').style.display='block';"
+    "  document.getElementById('formView').style.display='none';"
+    "}"
+    "async function connect(){"
+    "  const pass=document.getElementById('password')?.value||'';"
+    "  const data='ssid='+encodeURIComponent(selectedSSID)+'&password='+encodeURIComponent(pass);"
+    "  const status=document.getElementById('status');"
+    "  status.style.display='block';"
+    "  status.textContent='Connecting...';"
+    "  const res=await fetch('/wifi/connect',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:data});"
+    "  status.textContent=await res.text();"
+    "}"
+    "window.onload=()=>scanNetworks();"
+    "</script>"
+    "</body></html>";
+
+    httpd_resp_send(req, wifi_html, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static const httpd_uri_t wifi_page_uri = {
+    .uri       = "/wifi",
+    .method    = HTTP_GET,
+    .handler   = wifi_page_handler,
+    .user_ctx  = NULL
+};
+
+// File transfer page - simple upload interface
+static esp_err_t transfer_page_handler(httpd_req_t *req)
+{
+    const char* transfer_html =
+    "<!DOCTYPE html><html><head>"
+    "<meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>"
+    "<title>File Transfer</title>"
+    "<link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E⭐%3C/text%3E%3C/svg%3E\">"
+    "<style>"
+    "*{margin:0;padding:0;box-sizing:border-box;}"
+    "body{font-family:-apple-system,sans-serif;background:#000;color:#fff;padding:20px;min-height:100vh;}"
+    ".container{max-width:600px;margin:0 auto;}"
+    "h1{color:#FFE000;text-align:center;margin-bottom:30px;font-size:2em;}"
+    "h2{color:#FFE000;margin:20px 0 10px 0;}"
+    ".info{background:rgba(255,255,255,0.1);padding:20px;border-radius:10px;margin:20px 0;line-height:1.8;}"
+    ".feature{margin:10px 0;padding-left:20px;}"
+    ".feature:before{content:'→';color:#FFE000;margin-right:10px;}"
+    "button{width:100%;padding:15px;background:#FFE000;color:#000;border:none;border-radius:10px;font-size:1.1em;cursor:pointer;margin:10px 0;font-weight:bold;}"
+    "button:hover{background:#fff;}"
+    ".back{background:transparent;border:2px solid #FFE000;color:#FFE000;}"
+    ".back:hover{background:rgba(255,224,0,0.1);}"
+    "input[type=file]{display:block;width:100%;padding:12px;margin:15px 0;border:2px solid #FFE000;border-radius:10px;background:#000;color:#fff;}"
+    ".status{text-align:center;padding:15px;margin:15px 0;border-radius:10px;background:rgba(255,224,0,0.2);color:#FFE000;font-weight:bold;}"
+    "</style>"
+    "</head><body>"
+    "<div class='container'>"
+    "<h1>📁 File Transfer</h1>"
+    "<div class='info'>"
+    "<h2>Coming Soon</h2>"
+    "<p>File transfer functionality will allow you to:</p>"
+    "<div class='feature'>Upload custom portal HTML</div>"
+    "<div class='feature'>Upload media files (images, videos)</div>"
+    "<div class='feature'>Manage stored content</div>"
+    "<div class='feature'>View file system status</div>"
+    "</div>"
+    "<div class='info' style='background:rgba(255,224,0,0.1);border:2px solid #FFE000;'>"
+    "<p style='text-align:center;'>This feature is currently under development.<br>Check back in a future firmware update!</p>"
+    "</div>"
+    "<button class='back' onclick='location.href=\"/\"'>← Back to Portal</button>"
+    "</div>"
+    "</body></html>";
+
+    httpd_resp_send(req, transfer_html, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static const httpd_uri_t transfer_page_uri = {
+    .uri       = "/transfer",
+    .method    = HTTP_GET,
+    .handler   = transfer_page_handler,
+    .user_ctx  = NULL
+};
+
 // WiFi scan handler - returns JSON list of available networks
 static esp_err_t wifi_scan_handler(httpd_req_t *req)
 {
@@ -526,7 +660,8 @@ static esp_err_t generate_204_handler(httpd_req_t *req)
 {
     // Return portal HTML with 200 OK to trigger captive popup
     // Android expects something OTHER than 204 to know there's a portal
-    httpd_resp_send(req, LABORATORY_HTML, HTTPD_RESP_USE_STRLEN);
+    const char *html = setup_mode ? SETUP_PORTAL_HTML : LABORATORY_HTML;
+    httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
@@ -549,7 +684,8 @@ static esp_err_t hotspot_detect_handler(httpd_req_t *req)
 {
     // iOS detects portal when response is NOT "Success"
     // Returning HTML triggers the captive portal browser
-    httpd_resp_send(req, LABORATORY_HTML, HTTPD_RESP_USE_STRLEN);
+    const char *html = setup_mode ? SETUP_PORTAL_HTML : LABORATORY_HTML;
+    httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
@@ -570,7 +706,8 @@ static const httpd_uri_t library_test_uri = {
 // Windows connectivity check
 static esp_err_t connecttest_handler(httpd_req_t *req)
 {
-    httpd_resp_send(req, LABORATORY_HTML, HTTPD_RESP_USE_STRLEN);
+    const char *html = setup_mode ? SETUP_PORTAL_HTML : LABORATORY_HTML;
+    httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
@@ -594,12 +731,14 @@ static httpd_handle_t start_webserver(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.lru_purge_enable = true;
-    config.max_uri_handlers = 17;  // Increase from default 8 to fit all captive portal URIs + WiFi scan
+    config.max_uri_handlers = 20;  // Increase to fit all URIs + new pages
 
     ESP_LOGI(TAG, "Starting web server on port %d", config.server_port);
     if (httpd_start(&server, &config) == ESP_OK) {
         // Core endpoints
         httpd_register_uri_handler(server, &root_uri);
+        httpd_register_uri_handler(server, &wifi_page_uri);
+        httpd_register_uri_handler(server, &transfer_page_uri);
         httpd_register_uri_handler(server, &logs_uri);
         httpd_register_uri_handler(server, &logs_recent_uri);
         httpd_register_uri_handler(server, &ota_page_uri);
@@ -615,7 +754,9 @@ static httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &connecttest_uri);
         httpd_register_uri_handler(server, &ncsi_uri);
 
-        ESP_LOGI(TAG, "✓ Registered core endpoints: /, /debug/logs, /debug/recent, /update, /ota, /wifi/connect");
+        ESP_LOGI(TAG, "✓ Registered core endpoints: /, /wifi, /transfer, /update");
+        ESP_LOGI(TAG, "✓ Registered debug endpoints: /debug/logs, /debug/recent");
+        ESP_LOGI(TAG, "✓ Registered WiFi API: /wifi/scan, /wifi/connect");
         ESP_LOGI(TAG, "✓ Registered captive portal detection URLs (iOS, Android, Windows)");
         return server;
     }

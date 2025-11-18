@@ -5,5 +5,6 @@
 #define M5_POWER_HOLD_PIN 4
 
 void m5_power_init(void);
+void m5_power_off(void);
 
 #endif // M5_POWER_H

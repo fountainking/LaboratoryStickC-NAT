@@ -27,3 +27,14 @@ void m5_power_init(void)
     ESP_LOGI(TAG, "✓ Power HOLD enabled (GPIO 4 = HIGH)");
     ESP_LOGI(TAG, "✓ Device will stay on when unplugged");
 }
+
+void m5_power_off(void)
+{
+    ESP_LOGI(TAG, "Powering off device...");
+
+    // Set HOLD pin LOW to cut power
+    gpio_set_level(M5_POWER_HOLD_PIN, 0);
+
+    // Device will power off after this
+    ESP_LOGI(TAG, "✓ Power off initiated");
+}

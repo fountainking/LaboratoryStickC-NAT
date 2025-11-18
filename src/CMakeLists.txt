@@ -5,5 +5,5 @@ FILE(GLOB_RECURSE app_sources ${CMAKE_SOURCE_DIR}/src/*.*)
 
 idf_component_register(
     SRCS ${app_sources}
-    REQUIRES m5_display debug_screen log_capture log_screen tcp_debug dns_server ota_manager
+    REQUIRES m5_display debug_screen log_capture log_screen tcp_debug dns_server ota_manager sound_system
 )
