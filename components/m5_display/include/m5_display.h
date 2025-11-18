@@ -2,6 +2,7 @@
 #define M5_DISPLAY_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "esp_err.h"
 
 // M5StickC Plus2 ST7789 Display Configuration
@@ -56,7 +57,19 @@ void m5_display_draw_char(m5_display_t *display, int x, int y, char c, uint16_t 
 // Draw a string
 void m5_display_draw_string(m5_display_t *display, int x, int y, const char *str, uint16_t color, uint16_t bg);
 
+// Draw a scaled character (scale 1 = 8x8, scale 2 = 16x16, etc.)
+void m5_display_draw_char_scaled(m5_display_t *display, int x, int y, char c, uint16_t color, uint16_t bg, int scale);
+
+// Draw a scaled string (scale 1 = 8x8, scale 2 = 16x16, etc.)
+void m5_display_draw_string_scaled(m5_display_t *display, int x, int y, const char *str, uint16_t color, uint16_t bg, int scale);
+
 // Flush framebuffer to display
 void m5_display_flush(m5_display_t *display);
+
+// Set display brightness (0 = off, 1 = on)
+void m5_display_set_brightness(bool bright);
+
+// Get current brightness state
+bool m5_display_get_brightness(void);
 
 #endif // M5_DISPLAY_H

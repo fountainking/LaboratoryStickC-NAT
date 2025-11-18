@@ -2,12 +2,26 @@
 #include "esp_log.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
 #include <stdlib.h>
 
 static const char *TAG = "M5Display";
+
+// Brightness state
+static bool brightness_high = true;  // Default: bright
+
+// Backlight PWM configuration
+#define BL_LEDC_TIMER        LEDC_TIMER_1
+#define BL_LEDC_MODE         LEDC_LOW_SPEED_MODE
+#define BL_LEDC_CHANNEL      LEDC_CHANNEL_1
+#define BL_LEDC_DUTY_RES     LEDC_TIMER_8_BIT
+#define BL_DUTY_BRIGHT       (255)   // 100% duty cycle
+#define BL_DUTY_DIM          (102)   // 40% duty cycle (60% dimmer)
+
+static bool backlight_pwm_initialized = false;
 
 // ST7789 Commands
 #define ST7789_SWRESET 0x01
@@ -146,23 +160,53 @@ static void lcd_data_byte(uint8_t data)
     lcd_data(&data, 1);
 }
 
+// Initialize backlight PWM
+static esp_err_t init_backlight_pwm(void)
+{
+    // Configure LEDC timer for backlight
+    ledc_timer_config_t timer_conf = {
+        .speed_mode = BL_LEDC_MODE,
+        .duty_resolution = BL_LEDC_DUTY_RES,
+        .timer_num = BL_LEDC_TIMER,
+        .freq_hz = 1000,  // 1kHz PWM frequency (lower to avoid issues)
+        .clk_cfg = LEDC_AUTO_CLK
+    };
+    esp_err_t ret = ledc_timer_config(&timer_conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Backlight timer config failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    // Configure LEDC channel for backlight
+    ledc_channel_config_t channel_conf = {
+        .gpio_num = LCD_PIN_BL,
+        .speed_mode = BL_LEDC_MODE,
+        .channel = BL_LEDC_CHANNEL,
+        .timer_sel = BL_LEDC_TIMER,
+        .duty = BL_DUTY_BRIGHT,  // Start at full brightness
+        .hpoint = 0
+    };
+    ret = ledc_channel_config(&channel_conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Backlight channel config failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    backlight_pwm_initialized = true;
+    ESP_LOGI(TAG, "Backlight PWM initialized on GPIO %d", LCD_PIN_BL);
+    return ESP_OK;
+}
+
 esp_err_t m5_display_init(m5_display_t *display)
 {
     ESP_LOGI(TAG, "Initializing M5StickC Plus2 display...");
 
-    // Configure backlight GPIO - CRITICAL for display visibility
-    gpio_config_t bl_conf = {
-        .pin_bit_mask = (1ULL << LCD_PIN_BL),
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&bl_conf);
-
-    // Turn on backlight at FULL brightness
-    gpio_set_level(LCD_PIN_BL, 1);
-    ESP_LOGI(TAG, "Backlight GPIO %d turned ON", LCD_PIN_BL);
+    // Initialize backlight PWM for dimming support
+    esp_err_t ret = init_backlight_pwm();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Backlight PWM init failed");
+        return ret;
+    }
 
     // Configure DC and RST pins
     gpio_config_t ctrl_conf = {
@@ -183,7 +227,7 @@ esp_err_t m5_display_init(m5_display_t *display)
         .quadhd_io_num = -1,
         .max_transfer_sz = LCD_WIDTH * LCD_HEIGHT * 2,
     };
-    esp_err_t ret = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
+    ret = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "SPI bus init failed");
         return ret;
@@ -308,6 +352,57 @@ void m5_display_draw_string(m5_display_t *display, int x, int y, const char *str
     }
 }
 
+void m5_display_draw_char_scaled(m5_display_t *display, int x, int y, char c, uint16_t color, uint16_t bg, int scale)
+{
+    if (c < 32 || c > 126 || scale < 1) return;
+
+    const uint8_t *glyph = font8x8_basic[c - 32];
+
+    for (int j = 0; j < 8; j++) {
+        for (int i = 0; i < 8; i++) {
+            uint16_t pixel_color = (glyph[j] & (1 << i)) ? color : bg;
+
+            // Draw scaled pixel (scale x scale block)
+            for (int sy = 0; sy < scale; sy++) {
+                for (int sx = 0; sx < scale; sx++) {
+                    int px = x + (i * scale) + sx;
+                    int py = y + (j * scale) + sy;
+
+                    if (px >= 0 && px < LCD_WIDTH && py >= 0 && py < LCD_HEIGHT) {
+                        display->framebuffer[py * LCD_WIDTH + px] = pixel_color;
+                    }
+                }
+            }
+        }
+    }
+}
+
+void m5_display_draw_string_scaled(m5_display_t *display, int x, int y, const char *str, uint16_t color, uint16_t bg, int scale)
+{
+    if (scale < 1) scale = 1;
+
+    int cx = x;
+    int cy = y;
+    int char_width = 8 * scale;
+    int line_height = 10 * scale;
+
+    while (*str) {
+        if (*str == '\n') {
+            cy += line_height;
+            cx = x;
+        } else {
+            m5_display_draw_char_scaled(display, cx, cy, *str, color, bg, scale);
+            cx += char_width;
+
+            if (cx + char_width > LCD_WIDTH) {
+                cx = x;
+                cy += line_height;
+            }
+        }
+        str++;
+    }
+}
+
 void m5_display_flush(m5_display_t *display)
 {
     // M5StickC Plus2 offsets for 240x135 in landscape mode
@@ -359,4 +454,28 @@ void m5_display_flush(m5_display_t *display)
     for (int i = 0; i < pixel_count; i++) {
         fb[i] = __builtin_bswap16(fb[i]);
     }
+}
+
+// Set display brightness (dim mode on/off)
+void m5_display_set_brightness(bool bright)
+{
+    brightness_high = bright;
+
+    if (!backlight_pwm_initialized) {
+        ESP_LOGW(TAG, "Backlight PWM not initialized");
+        return;
+    }
+
+    // Set PWM duty cycle for brightness
+    uint32_t duty = bright ? BL_DUTY_BRIGHT : BL_DUTY_DIM;
+    ledc_set_duty(BL_LEDC_MODE, BL_LEDC_CHANNEL, duty);
+    ledc_update_duty(BL_LEDC_MODE, BL_LEDC_CHANNEL);
+
+    ESP_LOGI(TAG, "Brightness set to %s (duty: %lu)", bright ? "HIGH" : "DIM", duty);
+}
+
+// Get current brightness state
+bool m5_display_get_brightness(void)
+{
+    return brightness_high;
 }
