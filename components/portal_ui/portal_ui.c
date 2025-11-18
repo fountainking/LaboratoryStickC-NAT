@@ -1,5 +1,6 @@
 #include "portal_ui.h"
 #include "m5_display.h"
+#include "boot_animation.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -134,7 +135,11 @@ void portal_ui_init(void)
         return;
     }
 
-    // Clear screen
+    // Play boot animation
+    ESP_LOGI(TAG, "Playing boot animation...");
+    boot_animation_play(&display);
+
+    // Clear screen after boot animation
     m5_display_clear(&display, COLOR_BLACK);
     m5_display_flush(&display);
 
