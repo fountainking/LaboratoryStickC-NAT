@@ -1,13 +1,17 @@
 #include "portal_ui.h"
 #include "m5_display.h"
+#include "star_emoji.h"
+#include "mpu6886.h"
 #include "boot_animation.h"
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 // External functions to control AP
 extern void start_ap(const char *ssid, bool is_setup_mode);
@@ -29,6 +33,32 @@ static int selected_settings_item = 0;
 static int visitor_count = 0;
 static bool portal_running = false;
 static bool dim_enabled = false;  // Default: bright (dim OFF)
+
+// Screensaver state
+static bool screensaver_active = false;
+static uint32_t last_activity_time = 0;
+static uint32_t screensaver_start_time = 0;
+#define SCREENSAVER_TIMEOUT_MS  30000  // 30 seconds to start screensaver
+#define STAR_ANIMATION_MS       60000  // 60 seconds of star, then blank
+
+// LED pin for sleep indicator (active low)
+#define LED_GPIO  19
+
+// LED PWM configuration
+#define LED_LEDC_TIMER     LEDC_TIMER_2
+#define LED_LEDC_MODE      LEDC_LOW_SPEED_MODE
+#define LED_LEDC_CHANNEL   LEDC_CHANNEL_2
+#define LED_LEDC_DUTY_RES  LEDC_TIMER_8_BIT
+#define LED_LEDC_FREQ      5000
+
+static bool led_pwm_initialized = false;
+
+// Bouncing star physics
+static float star_x = 112.0f;  // Center of 240px - 16px star
+static float star_y = 60.0f;   // Center of 135px - 16px star
+static float star_vx = 0.0f;
+static float star_vy = 0.0f;
+static float star_angle = 0.0f;  // Rotation angle in radians
 
 // Main menu items
 static const char *main_menu[] = {
@@ -121,6 +151,8 @@ static void draw_settings_submenu(void);
 static void draw_wifi_setup(void);
 static void draw_portal_running(void);
 static void draw_transfer_running(void);
+static void draw_screensaver(void);
+static void reset_activity_timer(void);
 static void ui_task(void *param);
 
 // Initialize UI
@@ -156,7 +188,32 @@ void portal_ui_init(void)
     // Load dim preference from NVS
     load_dim_preference();
 
+    // Initialize IMU for screensaver
+    esp_err_t imu_ret = mpu6886_init();
+    if (imu_ret != ESP_OK) {
+        ESP_LOGW(TAG, "IMU init failed, screensaver will use button wake only");
+    }
+
+    // Initialize activity timer
+    last_activity_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
     ESP_LOGI(TAG, "Portal UI initialized");
+}
+
+// Reset activity timer (call on any user input)
+static void reset_activity_timer(void)
+{
+    last_activity_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    if (screensaver_active) {
+        screensaver_active = false;
+        // Restore brightness
+        m5_display_set_brightness(!dim_enabled);
+        // Turn off LED when waking
+        if (led_pwm_initialized) {
+            ledc_set_duty(LED_LEDC_MODE, LED_LEDC_CHANNEL, 255);  // Off (active low)
+            ledc_update_duty(LED_LEDC_MODE, LED_LEDC_CHANNEL);
+        }
+    }
 }
 
 // Start UI task
@@ -181,6 +238,7 @@ bool portal_ui_is_portal_running(void)
 void portal_ui_button_a_pressed(void)
 {
     ESP_LOGI(TAG, "Button A pressed");
+    reset_activity_timer();
     sound_system_play(SOUND_SELECT);  // Selection beep
 
     switch (current_state) {
@@ -250,6 +308,7 @@ void portal_ui_button_a_pressed(void)
 void portal_ui_button_b_pressed(void)
 {
     ESP_LOGI(TAG, "Button B pressed");
+    reset_activity_timer();
     sound_system_play(SOUND_NAV);  // Navigation beep (back)
 
     switch (current_state) {
@@ -285,6 +344,7 @@ void portal_ui_button_b_pressed(void)
 void portal_ui_button_c_pressed(void)
 {
     ESP_LOGI(TAG, "Button C pressed");
+    reset_activity_timer();
     sound_system_play(SOUND_NAV);  // Navigation beep (cycle)
 
     switch (current_state) {
@@ -313,20 +373,49 @@ static void draw_main_menu(void)
     // Title - 2x scale, 15px margins
     m5_display_draw_string_scaled(&display, 15, 15, "labPORTAL", COLOR_YELLOW, COLOR_BLACK, 2);
 
-    // Get WiFi SSID - show below title ONLY if connected (with 4px margin)
-    if (is_wifi_connected()) {
+
+    // Status indicator with colored dot
+    // Blue = Broadcasting + Connected (NAT active)
+    // Green = Connected to WiFi only
+    // Yellow = Disconnected
+    bool connected = is_wifi_connected();
+    bool broadcasting = portal_running;
+
+    // Draw status dot (filled circle, radius 3, centered at y=39 to align with text)
+    uint16_t dot_color;
+    if (broadcasting && connected) {
+        dot_color = COLOR_BLUE;
+    } else if (connected) {
+        dot_color = COLOR_GREEN;
+    } else {
+        dot_color = COLOR_YELLOW;
+    }
+    m5_display_fill_circle(&display, 18, 39, 3, dot_color);
+
+    // Show status text after dot with gradient
+    if (broadcasting && connected) {
+        // Blue to white gradient - NAT active
         const char *wifi_ssid = get_wifi_ssid();
         if (wifi_ssid && strlen(wifi_ssid) > 0) {
-            m5_display_draw_string(&display, 15, 36, wifi_ssid, COLOR_WHITE, COLOR_BLACK);
+            m5_display_draw_string_gradient(&display, 26, 36, wifi_ssid, COLOR_BLUE, COLOR_WHITE, COLOR_BLACK);
+        }
+    } else if (connected) {
+        // Green to white gradient - connected only
+        const char *wifi_ssid = get_wifi_ssid();
+        if (wifi_ssid && strlen(wifi_ssid) > 0) {
+            m5_display_draw_string_gradient(&display, 26, 36, wifi_ssid, COLOR_GREEN, COLOR_WHITE, COLOR_BLACK);
         }
     } else {
-        // Show hint if not connected
-        m5_display_draw_string(&display, 15, 36, "(Connect Wifi in Settings)", COLOR_LIGHT_YELLOW, COLOR_BLACK);
+        // Yellow to white gradient - disconnected
+        m5_display_draw_string_gradient(&display, 26, 36, "Disconnected", COLOR_YELLOW, COLOR_WHITE, COLOR_BLACK);
     }
 
     // Menu items - 2x scale, white text with blue/yellow highlight
     int y = 55;
     for (int i = 0; i < MAIN_MENU_COUNT; i++) {
+        int text_len = strlen(main_menu[i]);
+        int text_width = text_len * 16;  // 8px * scale 2
+
         if (i == selected_main_item) {
             // Settings (index 1) gets yellow highlight with black text
             // Portal (index 0) gets blue highlight with white text
@@ -337,6 +426,8 @@ static void draw_main_menu(void)
                 m5_display_fill_rect(&display, 0, y - 3, 240, 24, COLOR_BLUE);
                 m5_display_draw_string_scaled(&display, 15, y, main_menu[i], COLOR_WHITE, COLOR_BLUE, 2);
             }
+            // Draw star aligned to right with 15px margin (240 - 15 - 16 = 209)
+            m5_display_draw_sprite(&display, 209, y, STAR_WIDTH, STAR_HEIGHT, STAR_EMOJI_DATA, STAR_TRANSPARENT);
         } else {
             // Unselected - white text
             m5_display_draw_string_scaled(&display, 15, y, main_menu[i], COLOR_WHITE, COLOR_BLACK, 2);
@@ -355,12 +446,17 @@ static void draw_portal_submenu(void)
     // Title - 15px margins
     m5_display_draw_string_scaled(&display, 15, 15, "PORTAL", COLOR_YELLOW, COLOR_BLACK, 2);
 
-    // Menu items - yellow highlight with BLACK text
-    int y = 38;
+    // Menu items - scale 2 font, yellow highlight with BLACK text
+    int y = 40;
     for (int i = 0; i < PORTAL_MENU_COUNT; i++) {
+        int text_len = strlen(portal_menu[i]);
+        int text_width = text_len * 16;  // 8px * scale 2
+
         if (i == selected_portal_item) {
             m5_display_fill_rect(&display, 0, y - 3, 240, 24, COLOR_YELLOW);
             m5_display_draw_string_scaled(&display, 15, y, portal_menu[i], COLOR_BLACK, COLOR_YELLOW, 2);
+            // Draw star aligned to right with 15px margin
+            m5_display_draw_sprite(&display, 209, y, STAR_WIDTH, STAR_HEIGHT, STAR_EMOJI_DATA, STAR_TRANSPARENT);
         } else {
             m5_display_draw_string_scaled(&display, 15, y, portal_menu[i], COLOR_WHITE, COLOR_BLACK, 2);
         }
@@ -392,9 +488,14 @@ static void draw_settings_submenu(void)
             display_text = text_buf;
         }
 
+        int text_len = strlen(display_text);
+        int text_width = text_len * 16;  // 8px * scale 2
+
         if (i == selected_settings_item) {
             m5_display_fill_rect(&display, 0, y - 3, 240, 24, COLOR_YELLOW);
             m5_display_draw_string_scaled(&display, 15, y, display_text, COLOR_BLACK, COLOR_YELLOW, 2);
+            // Draw star aligned to right with 15px margin
+            m5_display_draw_sprite(&display, 209, y, STAR_WIDTH, STAR_HEIGHT, STAR_EMOJI_DATA, STAR_TRANSPARENT);
         } else {
             m5_display_draw_string_scaled(&display, 15, y, display_text, COLOR_WHITE, COLOR_BLACK, 2);
         }
@@ -457,6 +558,104 @@ static void draw_transfer_running(void)
 
     // Coming soon message
     m5_display_draw_string(&display, 30, 60, "Coming Soon!", COLOR_WHITE, COLOR_BLACK);
+
+    m5_display_flush(&display);
+}
+
+// Draw screensaver - bouncing star with gravity, then blank with LED
+static void draw_screensaver(void)
+{
+    uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    uint32_t elapsed = current_time - screensaver_start_time;
+
+    // After 60 seconds, show blank screen with LED pulse
+    if (elapsed > STAR_ANIMATION_MS) {
+        m5_display_clear(&display, COLOR_BLACK);
+        m5_display_flush(&display);
+
+        // Initialize LED GPIO if first time
+        static bool led_gpio_initialized = false;
+        if (!led_gpio_initialized) {
+            gpio_reset_pin(LED_GPIO);
+            gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
+            gpio_set_level(LED_GPIO, 1);  // Start off
+            led_gpio_initialized = true;
+            ESP_LOGI(TAG, "LED GPIO %d initialized", LED_GPIO);
+        }
+
+        // Smooth breathing using software PWM
+        bool broadcasting = portal_running;
+        uint32_t cycle_ms = broadcasting ? 1500 : 3000;
+
+        // Sine wave breathing
+        float phase = (float)(current_time % cycle_ms) / (float)cycle_ms * 2.0f * M_PI;
+        float breath = (sinf(phase) + 1.0f) / 2.0f;  // 0.0 to 1.0
+
+        // Software PWM at ~100Hz (10ms cycle)
+        uint32_t pwm_cycle = current_time % 10;
+
+        // Scale breath to max duty (very dim)
+        // broadcasting: max 4/10 = 40% duty
+        // idle: max 2/10 = 20% duty
+        uint32_t max_duty = broadcasting ? 4 : 2;
+        uint32_t threshold = (uint32_t)(breath * (float)max_duty);
+
+        // Active low: 0 = on, 1 = off
+        gpio_set_level(LED_GPIO, (pwm_cycle < threshold) ? 0 : 1);
+
+        return;
+    }
+
+    // Star animation mode
+    m5_display_clear(&display, COLOR_BLACK);
+
+    // Get accelerometer data for gravity
+    accel_data_t accel;
+    if (mpu6886_get_accel(&accel) == ESP_OK) {
+        // Rotate 90° left for landscape orientation
+        // Device Y-axis becomes screen X-axis
+        // Device X-axis becomes screen Y-axis (inverted)
+        star_vx += accel.y * 2.0f;
+        star_vy += accel.x * 2.0f;
+    }
+
+    // Apply some damping
+    star_vx *= 0.98f;
+    star_vy *= 0.98f;
+
+    // Update position
+    star_x += star_vx;
+    star_y += star_vy;
+
+    // Update rotation based on velocity direction
+    // Use cross-product style: positive vx spins one way, negative the other
+    // Combined effect: spins in direction of dominant movement
+    star_angle += (star_vx + star_vy) * 0.03f;
+
+    // Bounce off walls (4x scale = 64x64 pixels)
+    int scaled_size = STAR_WIDTH * 4;
+    int half_size = scaled_size / 2;
+
+    if (star_x < 0) {
+        star_x = 0;
+        star_vx = -star_vx * 0.7f;
+    } else if (star_x > 240 - scaled_size) {
+        star_x = 240 - scaled_size;
+        star_vx = -star_vx * 0.7f;
+    }
+
+    if (star_y < 0) {
+        star_y = 0;
+        star_vy = -star_vy * 0.7f;
+    } else if (star_y > 135 - scaled_size) {
+        star_y = 135 - scaled_size;
+        star_vy = -star_vy * 0.7f;
+    }
+
+    // Draw the star at 4x scale with rotation (use center coordinates)
+    float center_x = star_x + half_size;
+    float center_y = star_y + half_size;
+    m5_display_draw_sprite_rotated(&display, (int)center_x, (int)center_y, STAR_WIDTH, STAR_HEIGHT, STAR_EMOJI_DATA, STAR_TRANSPARENT, 4, star_angle);
 
     m5_display_flush(&display);
 }
@@ -659,29 +858,45 @@ static void ui_task(void *param)
             nat_test.ping_ms = 12;
         }
 
+        // Check for screensaver timeout
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        if (!screensaver_active && (current_time - last_activity_time) > SCREENSAVER_TIMEOUT_MS) {
+            screensaver_active = true;
+            screensaver_start_time = current_time;
+            // Dim screen for power saving
+            m5_display_set_brightness(false);
+            ESP_LOGI(TAG, "Screensaver activated");
+        }
+
+        // Button press wakes from screensaver (handled in button handlers via reset_activity_timer)
+
         // Redraw screen based on state
-        switch (current_state) {
-            case UI_MAIN_MENU:
-                draw_main_menu();
-                break;
-            case UI_PORTAL_SUBMENU:
-                draw_portal_submenu();
-                break;
-            case UI_SETTINGS_SUBMENU:
-                draw_settings_submenu();
-                break;
-            case UI_WIFI_SETUP:
-                draw_wifi_setup();
-                break;
-            case UI_PORTAL_RUNNING:
-                draw_portal_running();
-                break;
-            case UI_TRANSFER_RUNNING:
-                draw_transfer_running();
-                break;
-            case UI_NAT_TEST:
-                draw_nat_test();
-                break;
+        if (screensaver_active) {
+            draw_screensaver();
+        } else {
+            switch (current_state) {
+                case UI_MAIN_MENU:
+                    draw_main_menu();
+                    break;
+                case UI_PORTAL_SUBMENU:
+                    draw_portal_submenu();
+                    break;
+                case UI_SETTINGS_SUBMENU:
+                    draw_settings_submenu();
+                    break;
+                case UI_WIFI_SETUP:
+                    draw_wifi_setup();
+                    break;
+                case UI_PORTAL_RUNNING:
+                    draw_portal_running();
+                    break;
+                case UI_TRANSFER_RUNNING:
+                    draw_transfer_running();
+                    break;
+                case UI_NAT_TEST:
+                    draw_nat_test();
+                    break;
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(100)); // 10 FPS

@@ -17,7 +17,7 @@ static bool initialized = false;
 #define LEDC_MODE               LEDC_LOW_SPEED_MODE
 #define LEDC_CHANNEL            LEDC_CHANNEL_0
 #define LEDC_DUTY_RES           LEDC_TIMER_10_BIT
-#define LEDC_DUTY               (768)  // 75% duty cycle for louder buzzer
+#define LEDC_DUTY               (384)  // ~37% duty cycle for moderate volume
 
 // Initialize sound system (buzzer PWM)
 esp_err_t sound_system_init(void)
@@ -106,25 +106,25 @@ void sound_system_play(sound_type_t type)
 
     switch (type) {
         case SOUND_NAV:
-            // Short navigation beep (1.5kHz, 40ms) - lower freq, clearer tone
-            play_tone(1500, 40);
+            // Navigation click - soft tick
+            play_tone(1500, 10);
             break;
 
         case SOUND_SELECT:
-            // Medium selection beep (2kHz, 60ms) - distinct from nav
-            play_tone(2000, 60);
+            // Selection click - slightly more pronounced
+            play_tone(1800, 12);
             break;
 
         case SOUND_SUCCESS:
-            // Long success beep (2.5kHz, 120ms) - higher pitch, longer
-            play_tone(2500, 120);
+            // Success click - soft confirmation
+            play_tone(2000, 10);
             break;
 
         case SOUND_ERROR:
-            // Double error beep (800Hz, 100ms + 100ms) - lower freq for error
-            play_tone(800, 100);
-            vTaskDelay(pdMS_TO_TICKS(60));
-            play_tone(800, 100);
+            // Error double click - two soft ticks
+            play_tone(1200, 12);
+            vTaskDelay(pdMS_TO_TICKS(30));
+            play_tone(1200, 12);
             break;
     }
 }

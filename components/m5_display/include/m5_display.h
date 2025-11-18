@@ -52,6 +52,18 @@ void m5_display_clear(m5_display_t *display, uint16_t color);
 // Draw a filled rectangle
 void m5_display_fill_rect(m5_display_t *display, int x, int y, int w, int h, uint16_t color);
 
+// Draw a filled circle
+void m5_display_fill_circle(m5_display_t *display, int cx, int cy, int r, uint16_t color);
+
+// Draw a sprite with transparency (transparent_color pixels are skipped)
+void m5_display_draw_sprite(m5_display_t *display, int x, int y, int w, int h, const uint16_t *data, uint16_t transparent_color);
+
+// Draw a scaled sprite with transparency
+void m5_display_draw_sprite_scaled(m5_display_t *display, int x, int y, int w, int h, const uint16_t *data, uint16_t transparent_color, int scale);
+
+// Draw a rotated and scaled sprite (cx, cy = center, angle in radians)
+void m5_display_draw_sprite_rotated(m5_display_t *display, int cx, int cy, int w, int h, const uint16_t *data, uint16_t transparent_color, int scale, float angle);
+
 // Draw a character (8x8 bitmap font)
 void m5_display_draw_char(m5_display_t *display, int x, int y, char c, uint16_t color, uint16_t bg);
 
@@ -63,6 +75,9 @@ void m5_display_draw_char_scaled(m5_display_t *display, int x, int y, char c, ui
 
 // Draw a scaled string (scale 1 = 8x8, scale 2 = 16x16, etc.)
 void m5_display_draw_string_scaled(m5_display_t *display, int x, int y, const char *str, uint16_t color, uint16_t bg, int scale);
+
+// Draw a string with horizontal gradient (color1 at start, color2 at end)
+void m5_display_draw_string_gradient(m5_display_t *display, int x, int y, const char *str, uint16_t color1, uint16_t color2, uint16_t bg);
 
 // Flush framebuffer to display
 void m5_display_flush(m5_display_t *display);

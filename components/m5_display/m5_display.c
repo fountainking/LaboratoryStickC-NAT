@@ -7,6 +7,7 @@
 #include "freertos/task.h"
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 static const char *TAG = "M5Display";
 
@@ -311,6 +312,99 @@ void m5_display_fill_rect(m5_display_t *display, int x, int y, int w, int h, uin
     }
 }
 
+void m5_display_fill_circle(m5_display_t *display, int cx, int cy, int r, uint16_t color)
+{
+    for (int y = -r; y <= r; y++) {
+        for (int x = -r; x <= r; x++) {
+            if (x * x + y * y <= r * r) {
+                int px = cx + x;
+                int py = cy + y;
+                if (px >= 0 && px < LCD_WIDTH && py >= 0 && py < LCD_HEIGHT) {
+                    display->framebuffer[py * LCD_WIDTH + px] = color;
+                }
+            }
+        }
+    }
+}
+
+void m5_display_draw_sprite(m5_display_t *display, int x, int y, int w, int h, const uint16_t *data, uint16_t transparent_color)
+{
+    for (int j = 0; j < h; j++) {
+        for (int i = 0; i < w; i++) {
+            uint16_t pixel = data[j * w + i];
+            if (pixel != transparent_color) {
+                int px = x + i;
+                int py = y + j;
+                if (px >= 0 && px < LCD_WIDTH && py >= 0 && py < LCD_HEIGHT) {
+                    display->framebuffer[py * LCD_WIDTH + px] = pixel;
+                }
+            }
+        }
+    }
+}
+
+void m5_display_draw_sprite_scaled(m5_display_t *display, int x, int y, int w, int h, const uint16_t *data, uint16_t transparent_color, int scale)
+{
+    if (scale < 1) scale = 1;
+
+    for (int j = 0; j < h; j++) {
+        for (int i = 0; i < w; i++) {
+            uint16_t pixel = data[j * w + i];
+            if (pixel != transparent_color) {
+                // Draw scaled pixel (scale x scale block)
+                for (int sy = 0; sy < scale; sy++) {
+                    for (int sx = 0; sx < scale; sx++) {
+                        int px = x + (i * scale) + sx;
+                        int py = y + (j * scale) + sy;
+                        if (px >= 0 && px < LCD_WIDTH && py >= 0 && py < LCD_HEIGHT) {
+                            display->framebuffer[py * LCD_WIDTH + px] = pixel;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void m5_display_draw_sprite_rotated(m5_display_t *display, int cx, int cy, int w, int h, const uint16_t *data, uint16_t transparent_color, int scale, float angle)
+{
+    if (scale < 1) scale = 1;
+
+    float cos_a = cosf(angle);
+    float sin_a = sinf(angle);
+
+    int scaled_w = w * scale;
+    int scaled_h = h * scale;
+    int half_w = scaled_w / 2;
+    int half_h = scaled_h / 2;
+
+    // For each pixel in the output (bounding box around rotated sprite)
+    int bound = (scaled_w > scaled_h ? scaled_w : scaled_h);
+
+    for (int dy = -bound; dy < bound; dy++) {
+        for (int dx = -bound; dx < bound; dx++) {
+            // Rotate back to find source pixel
+            float src_x = (dx * cos_a + dy * sin_a) + half_w;
+            float src_y = (-dx * sin_a + dy * cos_a) + half_h;
+
+            // Convert to source sprite coordinates
+            int si = (int)(src_x / scale);
+            int sj = (int)(src_y / scale);
+
+            if (si >= 0 && si < w && sj >= 0 && sj < h) {
+                uint16_t pixel = data[sj * w + si];
+                if (pixel != transparent_color) {
+                    int px = cx + dx;
+                    int py = cy + dy;
+                    if (px >= 0 && px < LCD_WIDTH && py >= 0 && py < LCD_HEIGHT) {
+                        display->framebuffer[py * LCD_WIDTH + px] = pixel;
+                    }
+                }
+            }
+        }
+    }
+}
+
 void m5_display_draw_char(m5_display_t *display, int x, int y, char c, uint16_t color, uint16_t bg)
 {
     if (c < 32 || c > 126) return;
@@ -398,6 +492,52 @@ void m5_display_draw_string_scaled(m5_display_t *display, int x, int y, const ch
                 cx = x;
                 cy += line_height;
             }
+        }
+        str++;
+    }
+}
+
+// Helper to interpolate between two RGB565 colors
+static uint16_t interpolate_color(uint16_t c1, uint16_t c2, int step, int total_steps)
+{
+    if (total_steps <= 1) return c1;
+
+    // Extract RGB565 components
+    int r1 = (c1 >> 11) & 0x1F;
+    int g1 = (c1 >> 5) & 0x3F;
+    int b1 = c1 & 0x1F;
+
+    int r2 = (c2 >> 11) & 0x1F;
+    int g2 = (c2 >> 5) & 0x3F;
+    int b2 = c2 & 0x1F;
+
+    // Interpolate
+    int r = r1 + ((r2 - r1) * step) / (total_steps - 1);
+    int g = g1 + ((g2 - g1) * step) / (total_steps - 1);
+    int b = b1 + ((b2 - b1) * step) / (total_steps - 1);
+
+    return (r << 11) | (g << 5) | b;
+}
+
+void m5_display_draw_string_gradient(m5_display_t *display, int x, int y, const char *str, uint16_t color1, uint16_t color2, uint16_t bg)
+{
+    int len = 0;
+    const char *p = str;
+    while (*p) { len++; p++; }
+
+    if (len == 0) return;
+
+    int cx = x;
+    int i = 0;
+
+    while (*str) {
+        if (*str == '\n') {
+            // Don't handle newlines for gradient - just skip
+        } else {
+            uint16_t color = interpolate_color(color1, color2, i, len);
+            m5_display_draw_char(display, cx, y, *str, color, bg);
+            cx += 8;
+            i++;
         }
         str++;
     }

@@ -34,6 +34,10 @@ static const char *TAG = "Laboratory";
 static esp_netif_t *g_sta_netif = NULL;
 static esp_netif_t *g_ap_netif = NULL;
 
+// WiFi retry counter
+static int wifi_retry_count = 0;
+#define WIFI_MAX_RETRY 5
+
 // Ping callback
 static void ping_success(esp_ping_handle_t hdl, void *args)
 {
@@ -185,10 +189,16 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        ESP_LOGI(TAG, "Disconnected from AP, retrying...");
-        tcp_debug_printf("[WIFI] STA disconnected, retrying...\r\n");
         wifi_connected = false;
-        esp_wifi_connect();
+        if (wifi_retry_count < WIFI_MAX_RETRY) {
+            wifi_retry_count++;
+            ESP_LOGI(TAG, "Disconnected from AP, retry %d/%d...", wifi_retry_count, WIFI_MAX_RETRY);
+            tcp_debug_printf("[WIFI] STA disconnected, retry %d/%d...\r\n", wifi_retry_count, WIFI_MAX_RETRY);
+            esp_wifi_connect();
+        } else {
+            ESP_LOGW(TAG, "WiFi connection failed after %d attempts - use Portal > Join WiFi to configure", WIFI_MAX_RETRY);
+            tcp_debug_printf("[WIFI] Connection failed after %d attempts\r\n", WIFI_MAX_RETRY);
+        }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STACONNECTED) {
         wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
         ESP_LOGI(TAG, "Client connected to AP - MAC: %02x:%02x:%02x:%02x:%02x:%02x",
@@ -213,6 +223,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "Netmask: " IPSTR, IP2STR(&event->ip_info.netmask));
         tcp_debug_printf("[NAT] STA got IP: " IPSTR "\r\n", IP2STR(&event->ip_info.ip));
         wifi_connected = true;
+        wifi_retry_count = 0;  // Reset retry counter on successful connection
         sound_system_play(SOUND_SUCCESS);  // Success beep for internet connection
 
         // ENABLE NAT - Masquerade AP subnet (192.168.4.0/24) through STA interface
