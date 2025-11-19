@@ -660,14 +660,20 @@ static const httpd_uri_t wifi_connect_uri = {
 };
 
 // Captive portal detection handlers
-// Android connectivity checks - MUST return 204 No Content for detection to work
+// All detection endpoints return 302 redirect to portal IP
+// This is more reliable than returning HTML directly (avoids caching issues)
+static esp_err_t captive_redirect_handler(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "http://192.168.4.1");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
+// Android connectivity checks
 static esp_err_t generate_204_handler(httpd_req_t *req)
 {
-    // Return portal HTML with 200 OK to trigger captive popup
-    // Android expects something OTHER than 204 to know there's a portal
-    const char *html = setup_mode ? SETUP_PORTAL_HTML : LABORATORY_HTML;
-    httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
-    return ESP_OK;
+    return captive_redirect_handler(req);
 }
 
 static const httpd_uri_t generate_204_uri = {
@@ -684,14 +690,10 @@ static const httpd_uri_t gen_204_uri = {
     .user_ctx  = NULL
 };
 
-// iOS/Apple captive portal detection - expects "Success" or HTML to trigger portal
+// iOS/Apple captive portal detection
 static esp_err_t hotspot_detect_handler(httpd_req_t *req)
 {
-    // iOS detects portal when response is NOT "Success"
-    // Returning HTML triggers the captive portal browser
-    const char *html = setup_mode ? SETUP_PORTAL_HTML : LABORATORY_HTML;
-    httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
-    return ESP_OK;
+    return captive_redirect_handler(req);
 }
 
 static const httpd_uri_t hotspot_detect_uri = {
@@ -711,9 +713,7 @@ static const httpd_uri_t library_test_uri = {
 // Windows connectivity check
 static esp_err_t connecttest_handler(httpd_req_t *req)
 {
-    const char *html = setup_mode ? SETUP_PORTAL_HTML : LABORATORY_HTML;
-    httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
-    return ESP_OK;
+    return captive_redirect_handler(req);
 }
 
 static const httpd_uri_t connecttest_uri = {
@@ -730,13 +730,36 @@ static const httpd_uri_t ncsi_uri = {
     .user_ctx  = NULL
 };
 
+// Linux connectivity checks
+static const httpd_uri_t canonical_uri = {
+    .uri       = "/canonical.html",
+    .method    = HTTP_GET,
+    .handler   = captive_redirect_handler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t connectivity_check_uri = {
+    .uri       = "/connectivity-check.html",
+    .method    = HTTP_GET,
+    .handler   = captive_redirect_handler,
+    .user_ctx  = NULL
+};
+
+// Firefox connectivity check
+static const httpd_uri_t success_txt_uri = {
+    .uri       = "/success.txt",
+    .method    = HTTP_GET,
+    .handler   = captive_redirect_handler,
+    .user_ctx  = NULL
+};
+
 static httpd_handle_t start_webserver(void)
 {
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.lru_purge_enable = true;
-    config.max_uri_handlers = 20;  // Increase to fit all URIs + new pages
+    config.max_uri_handlers = 24;  // Increase to fit all URIs + captive detection
 
     ESP_LOGI(TAG, "Starting web server on port %d", config.server_port);
     if (httpd_start(&server, &config) == ESP_OK) {
@@ -751,18 +774,21 @@ static httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &wifi_scan_uri);
         httpd_register_uri_handler(server, &wifi_connect_uri);
 
-        // Captive portal detection endpoints
-        httpd_register_uri_handler(server, &generate_204_uri);
-        httpd_register_uri_handler(server, &gen_204_uri);
-        httpd_register_uri_handler(server, &hotspot_detect_uri);
-        httpd_register_uri_handler(server, &library_test_uri);
-        httpd_register_uri_handler(server, &connecttest_uri);
-        httpd_register_uri_handler(server, &ncsi_uri);
+        // Captive portal detection endpoints (all return 302 redirect)
+        httpd_register_uri_handler(server, &generate_204_uri);   // Android
+        httpd_register_uri_handler(server, &gen_204_uri);        // Android
+        httpd_register_uri_handler(server, &hotspot_detect_uri); // iOS/macOS
+        httpd_register_uri_handler(server, &library_test_uri);   // iOS/macOS
+        httpd_register_uri_handler(server, &connecttest_uri);    // Windows
+        httpd_register_uri_handler(server, &ncsi_uri);           // Windows
+        httpd_register_uri_handler(server, &canonical_uri);      // Linux
+        httpd_register_uri_handler(server, &connectivity_check_uri); // Linux
+        httpd_register_uri_handler(server, &success_txt_uri);    // Firefox
 
         ESP_LOGI(TAG, "✓ Registered core endpoints: /, /wifi, /transfer, /update");
         ESP_LOGI(TAG, "✓ Registered debug endpoints: /debug/logs, /debug/recent");
         ESP_LOGI(TAG, "✓ Registered WiFi API: /wifi/scan, /wifi/connect");
-        ESP_LOGI(TAG, "✓ Registered captive portal detection URLs (iOS, Android, Windows)");
+        ESP_LOGI(TAG, "✓ Registered captive portal detection (Android, iOS, Windows, Linux, Firefox)");
         return server;
     }
 
