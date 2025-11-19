@@ -13,7 +13,8 @@ static const char *TAG = "DNS";
 #define UPSTREAM_DNS "8.8.8.8"
 
 // Global flag: enable/disable captive portal hijacking
-static bool captive_mode_enabled = true;
+// Disabled by default - enabled when user selects a portal from menu
+static bool captive_mode_enabled = false;
 
 // DNS header structure
 typedef struct {

@@ -3,6 +3,7 @@
 #include "star_emoji.h"
 #include "mpu6886.h"
 #include "boot_animation.h"
+#include "dns_server.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "freertos/FreeRTOS.h"
@@ -257,22 +258,29 @@ void portal_ui_button_a_pressed(void)
             // Launch selected portal option
             if (selected_portal_item == 0) {
                 // Join WiFi - setup mode = true
-                start_ap("labPORTAL Wifi Setup", true);
+                dns_set_captive_mode(true);  // Enable captive portal
+                start_ap("wifiPORTAL", true);
                 current_state = UI_WIFI_SETUP;
                 ESP_LOGI(TAG, "WiFi Setup opened");
             } else if (selected_portal_item == 1) {
                 // Laboratory portal - setup mode = false
-                start_ap("Laboratory", false);
+                dns_set_captive_mode(true);  // Enable captive portal
+                start_ap("labPORTAL", false);
                 portal_running = true;
                 current_state = UI_PORTAL_RUNNING;
                 ESP_LOGI(TAG, "Laboratory portal started");
             } else if (selected_portal_item == 2) {
                 // Transfer
+                dns_set_captive_mode(true);  // Enable captive portal
+                start_ap("xferPORTAL", false);
                 current_state = UI_TRANSFER_RUNNING;
                 ESP_LOGI(TAG, "Transfer mode");
             } else if (selected_portal_item == 3) {
-                // New (+) - does nothing for now
-                ESP_LOGI(TAG, "New portal (not implemented)");
+                // New portal
+                dns_set_captive_mode(true);  // Enable captive portal
+                start_ap("newPORTAL", false);
+                current_state = UI_TRANSFER_RUNNING;  // Reuse transfer state for now
+                ESP_LOGI(TAG, "New portal started");
             }
             break;
 
@@ -521,15 +529,17 @@ static void draw_wifi_setup(void)
     m5_display_clear(&display, COLOR_BLACK);
 
     // Title
-    m5_display_draw_string(&display, 10, 10, "WIFI SETUP", COLOR_YELLOW, COLOR_BLACK);
+    m5_display_draw_string_scaled(&display, 5, 10, "wifiPORTAL", COLOR_YELLOW, COLOR_BLACK, 2);
+
+    // Status
+    m5_display_draw_string(&display, 10, 40, "Broadcasting!", COLOR_GREEN, COLOR_BLACK);
 
     // Instructions
-    m5_display_draw_string(&display, 10, 35, "Connect phone to", COLOR_WHITE, COLOR_BLACK);
-    m5_display_draw_string(&display, 10, 50, "labPORTAL Wifi", COLOR_YELLOW, COLOR_BLACK);
-    m5_display_draw_string(&display, 10, 65, "Setup", COLOR_YELLOW, COLOR_BLACK);
+    m5_display_draw_string(&display, 10, 60, "Connect phone to:", COLOR_WHITE, COLOR_BLACK);
+    m5_display_draw_string(&display, 10, 75, "wifiPORTAL", COLOR_YELLOW, COLOR_BLACK);
 
-    m5_display_draw_string(&display, 10, 85, "Go to:", COLOR_WHITE, COLOR_BLACK);
-    m5_display_draw_string(&display, 10, 100, "192.168.4.1/wifi", COLOR_YELLOW, COLOR_BLACK);
+    m5_display_draw_string(&display, 10, 95, "Go to:", COLOR_WHITE, COLOR_BLACK);
+    m5_display_draw_string(&display, 10, 110, "192.168.4.1/wifi", COLOR_YELLOW, COLOR_BLACK);
 
     m5_display_flush(&display);
 }
@@ -540,10 +550,10 @@ static void draw_portal_running(void)
     m5_display_clear(&display, COLOR_BLACK);
 
     // Title
-    m5_display_draw_string_scaled(&display, 5, 10, "Laboratory", COLOR_YELLOW, COLOR_BLACK, 2);
+    m5_display_draw_string_scaled(&display, 5, 10, "labPORTAL", COLOR_YELLOW, COLOR_BLACK, 2);
 
     // Status
-    m5_display_draw_string(&display, 10, 40, "Portal Active", COLOR_GREEN, COLOR_BLACK);
+    m5_display_draw_string(&display, 10, 40, "Broadcasting!", COLOR_GREEN, COLOR_BLACK);
 
     // Visitors
     char visitor_str[32];
@@ -552,7 +562,7 @@ static void draw_portal_running(void)
 
     // AP Info
     m5_display_draw_string(&display, 10, 75, "Connect to:", COLOR_WHITE, COLOR_BLACK);
-    m5_display_draw_string(&display, 10, 90, "Laboratory", COLOR_YELLOW, COLOR_BLACK);
+    m5_display_draw_string(&display, 10, 90, "labPORTAL", COLOR_YELLOW, COLOR_BLACK);
     m5_display_draw_string(&display, 10, 105, "192.168.4.1", COLOR_YELLOW, COLOR_BLACK);
 
     m5_display_flush(&display);
@@ -564,10 +574,17 @@ static void draw_transfer_running(void)
     m5_display_clear(&display, COLOR_BLACK);
 
     // Title
-    m5_display_draw_string_scaled(&display, 5, 10, "TRANSFER", COLOR_YELLOW, COLOR_BLACK, 2);
+    m5_display_draw_string_scaled(&display, 5, 10, "xferPORTAL", COLOR_YELLOW, COLOR_BLACK, 2);
+
+    // Status
+    m5_display_draw_string(&display, 10, 40, "Broadcasting!", COLOR_GREEN, COLOR_BLACK);
 
     // Coming soon message
-    m5_display_draw_string(&display, 30, 60, "Coming Soon!", COLOR_WHITE, COLOR_BLACK);
+    m5_display_draw_string(&display, 10, 60, "Coming Soon!", COLOR_WHITE, COLOR_BLACK);
+
+    // AP Info
+    m5_display_draw_string(&display, 10, 85, "Connect to:", COLOR_WHITE, COLOR_BLACK);
+    m5_display_draw_string(&display, 10, 100, "xferPORTAL", COLOR_YELLOW, COLOR_BLACK);
 
     m5_display_flush(&display);
 }
