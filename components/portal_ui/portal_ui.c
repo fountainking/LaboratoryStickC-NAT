@@ -81,9 +81,10 @@ static const char *portal_menu[] = {
 static const char *settings_menu[] = {
     "Sound",
     "Dim",
-    "Update"
+    "Update",
+    "Networks"
 };
-#define SETTINGS_MENU_COUNT 3
+#define SETTINGS_MENU_COUNT 4
 
 // Function to get sound setting display text
 static void get_sound_text(char *buf, size_t len) {
@@ -149,6 +150,7 @@ static nat_test_state_t nat_test = {0};
 static void draw_main_menu(void);
 static void draw_portal_submenu(void);
 static void draw_settings_submenu(void);
+static void draw_saved_networks(void);
 static void draw_wifi_setup(void);
 static void draw_portal_running(void);
 static void draw_transfer_running(void);
@@ -303,8 +305,37 @@ void portal_ui_button_a_pressed(void)
                 save_dim_preference();
                 sound_system_play(SOUND_SELECT);
                 ESP_LOGI(TAG, "Dim toggled to %s", dim_enabled ? "ON" : "OFF");
-            } else {
-                ESP_LOGI(TAG, "Settings option %d selected (not implemented)", selected_settings_item);
+            } else if (selected_settings_item == 2) {
+                // Update - not implemented yet
+                ESP_LOGI(TAG, "Update option selected (not implemented)");
+            } else if (selected_settings_item == 3) {
+                // Networks
+                current_state = UI_SAVED_NETWORKS;
+                ESP_LOGI(TAG, "Networks opened");
+            }
+            break;
+
+        case UI_SAVED_NETWORKS:
+            // Delete saved network
+            {
+                nvs_handle_t nvs;
+                if (nvs_open("storage", NVS_READWRITE, &nvs) == ESP_OK) {
+                    // Check if there's actually a saved network
+                    char ssid[33] = {0};
+                    size_t ssid_len = sizeof(ssid);
+                    if (nvs_get_str(nvs, "wifi_ssid", ssid, &ssid_len) == ESP_OK && strlen(ssid) > 0) {
+                        // Delete both ssid and password
+                        nvs_erase_key(nvs, "wifi_ssid");
+                        nvs_erase_key(nvs, "wifi_pass");
+                        nvs_commit(nvs);
+                        ESP_LOGI(TAG, "Deleted saved network: %s", ssid);
+                        sound_system_play(SOUND_SUCCESS);
+
+                        // Go back to settings submenu after deletion
+                        current_state = UI_SETTINGS_SUBMENU;
+                    }
+                    nvs_close(nvs);
+                }
             }
             break;
 
@@ -324,6 +355,11 @@ void portal_ui_button_b_pressed(void)
         case UI_SETTINGS_SUBMENU:
             // Back to main menu
             current_state = UI_MAIN_MENU;
+            break;
+
+        case UI_SAVED_NETWORKS:
+            // Back to settings submenu
+            current_state = UI_SETTINGS_SUBMENU;
             break;
 
         case UI_WIFI_SETUP:
@@ -519,6 +555,64 @@ static void draw_settings_submenu(void)
         }
         y += 23;
     }
+
+    m5_display_flush(&display);
+}
+
+// Draw Saved Networks screen
+static void draw_saved_networks(void)
+{
+    m5_display_clear(&display, COLOR_BLACK);
+
+    // Title
+    m5_display_draw_string_scaled(&display, 5, 10, "SAVED NETWORKS", COLOR_YELLOW, COLOR_BLACK, 2);
+
+    // Try to load saved WiFi credentials from NVS
+    nvs_handle_t nvs;
+    char ssid[33] = {0};
+    bool has_saved = false;
+
+    if (nvs_open("storage", NVS_READONLY, &nvs) == ESP_OK) {
+        size_t ssid_len = sizeof(ssid);
+        if (nvs_get_str(nvs, "wifi_ssid", ssid, &ssid_len) == ESP_OK && strlen(ssid) > 0) {
+            has_saved = true;
+        }
+        nvs_close(nvs);
+    }
+
+    int y = 45;
+
+    if (has_saved) {
+        // Show saved network
+        bool connected = is_wifi_connected();
+        const char *current_ssid = get_wifi_ssid();
+        bool is_current = (strcmp(ssid, current_ssid) == 0);
+
+        // Network name with status indicator
+        uint16_t text_color = (connected && is_current) ? COLOR_GREEN : COLOR_WHITE;
+        m5_display_draw_string(&display, 10, y, ssid, text_color, COLOR_BLACK);
+
+        y += 15;
+
+        // Status
+        if (connected && is_current) {
+            m5_display_draw_string(&display, 10, y, "Connected", COLOR_GREEN, COLOR_BLACK);
+        } else {
+            m5_display_draw_string(&display, 10, y, "Saved", COLOR_YELLOW, COLOR_BLACK);
+        }
+
+        y += 25;
+
+        // Delete option
+        m5_display_draw_string_scaled(&display, 10, y, "A: Delete Network", COLOR_RED, COLOR_BLACK, 1);
+    } else {
+        // No saved networks
+        m5_display_draw_string_scaled(&display, 10, y, "No saved", COLOR_YELLOW, COLOR_BLACK, 2);
+        m5_display_draw_string_scaled(&display, 10, y + 20, "networks", COLOR_YELLOW, COLOR_BLACK, 2);
+    }
+
+    // Back instruction
+    m5_display_draw_string(&display, 10, 120, "B: Back", COLOR_WHITE, COLOR_BLACK);
 
     m5_display_flush(&display);
 }
@@ -910,6 +1004,9 @@ static void ui_task(void *param)
                     break;
                 case UI_SETTINGS_SUBMENU:
                     draw_settings_submenu();
+                    break;
+                case UI_SAVED_NETWORKS:
+                    draw_saved_networks();
                     break;
                 case UI_WIFI_SETUP:
                     draw_wifi_setup();

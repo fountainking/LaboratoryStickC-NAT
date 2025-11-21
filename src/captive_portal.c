@@ -15,7 +15,9 @@ static const char *TAG = "Portal";
 // Buffer for serving logs (16KB should be plenty)
 #define LOG_RESPONSE_BUFFER_SIZE (16 * 1024)
 
-// WiFi Setup Portal - Shown when device needs configuration
+// Landing pages removed - portal now redirects straight to /wifi scanner
+// WiFi Setup Portal - Shown when device needs configuration (UNUSED - kept for reference)
+/*
 static const char SETUP_PORTAL_HTML[] =
 "<!DOCTYPE html>"
 "<html>"
@@ -104,12 +106,15 @@ static const char LABORATORY_HTML[] =
 "</div>"
 "</body>"
 "</html>";
+*/
 
 // Root handler - serves the appropriate portal based on mode
 static esp_err_t root_handler(httpd_req_t *req)
 {
-    const char *html = setup_mode ? SETUP_PORTAL_HTML : LABORATORY_HTML;
-    httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
+    // Redirect straight to WiFi scanner - no landing page
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "/wifi");
+    httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
 

@@ -38,6 +38,10 @@ static esp_netif_t *g_ap_netif = NULL;
 static int wifi_retry_count = 0;
 #define WIFI_MAX_RETRY 5
 
+// Global flags
+static bool wifi_connected = false;
+bool setup_mode = true;
+
 // Ping callback
 static void ping_success(esp_ping_handle_t hdl, void *args)
 {
@@ -106,17 +110,17 @@ static void test_internet_connectivity(void)
 #define AP_SSID_SETUP "labPORTAL Wifi Setup"
 #define AP_PASS ""  // Open network
 #define AP_CHANNEL 1
-#define AP_MAX_CONN 8
+#define AP_MAX_CONN 10  // Hardware limit
 
-// Function to update AP SSID and mode (DNS/HTTP already running from boot)
+// Function to start AP with DNS and HTTP services
 void start_ap(const char *ssid, bool is_setup_mode)
 {
-    ESP_LOGI(TAG, "Updating AP: %s (setup_mode=%d)", ssid, is_setup_mode);
+    ESP_LOGI(TAG, "Starting AP: %s (setup_mode=%d)", ssid, is_setup_mode);
 
     // Set global setup mode flag for HTTP server
     setup_mode = is_setup_mode;
 
-    // Configure AP with new SSID
+    // Configure AP with SSID
     wifi_config_t wifi_ap_config = {
         .ap = {
             .ssid = "",
@@ -132,10 +136,32 @@ void start_ap(const char *ssid, bool is_setup_mode)
     strcpy((char*)wifi_ap_config.ap.ssid, ssid);
     wifi_ap_config.ap.ssid_len = strlen(ssid);
 
-    // Update AP config (already in APSTA mode from boot)
+    // Switch to APSTA mode and configure AP
+    esp_wifi_set_mode(WIFI_MODE_APSTA);
     esp_wifi_set_config(WIFI_IF_AP, &wifi_ap_config);
 
-    ESP_LOGI(TAG, "✓ AP SSID updated: %s", ssid);
+    // Start DNS server for captive portal detection
+    dns_server_start();
+    ESP_LOGI(TAG, "✓ DNS server started");
+
+    // Start HTTP captive portal server
+    start_captive_portal();
+    ESP_LOGI(TAG, "✓ HTTP server started");
+
+    // If STA is already connected, enable NAT
+    if (wifi_connected) {
+        ESP_LOGI(TAG, "STA already connected - enabling NAT");
+        esp_err_t err = esp_netif_napt_enable(g_ap_netif);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "✓ NAT ENABLED on AP netif");
+            tcp_debug_printf("[NAT] ✓ ENABLED: 192.168.4.x -> STA\r\n");
+            dns_set_captive_mode(false);  // Disable captive portal hijacking
+        } else {
+            ESP_LOGE(TAG, "✗ NAT ENABLE FAILED: %s", esp_err_to_name(err));
+        }
+    }
+
+    ESP_LOGI(TAG, "✓ AP active: %s", ssid);
     ESP_LOGI(TAG, "✓ Serving %s portal at http://192.168.4.1", is_setup_mode ? "SETUP" : "LABORATORY");
 }
 
@@ -150,15 +176,7 @@ void stop_ap(void)
     ESP_LOGI(TAG, "✓ AP stopped (STA-only mode)");
 }
 
-// WiFi credentials
-#define STA_SSID "🍓"
-#define STA_PASS "farted123"
-
-// Global flag: are we in setup mode? (defined in header)
-bool setup_mode = true;
-
-// Global flag: are we connected to WiFi?
-static bool wifi_connected = false;
+// No hardcoded WiFi credentials - device must learn networks via Portal UI
 
 // Function to get current WiFi SSID
 const char* get_wifi_ssid(void)
@@ -235,8 +253,8 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         vTaskDelay(pdMS_TO_TICKS(2000));  // Wait 2s for routing to settle
         test_internet_connectivity();
 
-        // Keep captive portal active so popup triggers
-        // dns_set_captive_mode(false);  // Commented out - need popup to work!
+        // Disable captive portal hijacking - let iOS/Android see real internet
+        dns_set_captive_mode(false);
 
         // Start TCP debug server after we have IP
         tcp_debug_init();
@@ -300,61 +318,32 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
 
-    // Configure STA mode (try to load from NVS first, fallback to hardcoded)
+    // Configure STA mode - load from NVS only (no hardcoded fallback)
     wifi_config_t wifi_sta_config = {0};
 
     // Try to load saved WiFi credentials from NVS
     nvs_handle_t nvs;
-    bool credentials_loaded = false;
     if (nvs_open("storage", NVS_READONLY, &nvs) == ESP_OK) {
         size_t ssid_len = sizeof(wifi_sta_config.sta.ssid);
         size_t pass_len = sizeof(wifi_sta_config.sta.password);
 
         if (nvs_get_str(nvs, "wifi_ssid", (char*)wifi_sta_config.sta.ssid, &ssid_len) == ESP_OK &&
             nvs_get_str(nvs, "wifi_pass", (char*)wifi_sta_config.sta.password, &pass_len) == ESP_OK) {
-            ESP_LOGI(TAG, "Loaded saved WiFi credentials from NVS: %s", wifi_sta_config.sta.ssid);
-            credentials_loaded = true;
+            ESP_LOGI(TAG, "✓ Loaded saved network from NVS: %s", wifi_sta_config.sta.ssid);
+            setup_mode = false;
+        } else {
+            ESP_LOGI(TAG, "No saved networks - device must connect via Portal UI");
+            setup_mode = true;
         }
         nvs_close(nvs);
-    }
-
-    // Fallback to hardcoded credentials if none saved
-    if (!credentials_loaded) {
-        strcpy((char*)wifi_sta_config.sta.ssid, STA_SSID);
-        strcpy((char*)wifi_sta_config.sta.password, STA_PASS);
-        ESP_LOGI(TAG, "Using hardcoded WiFi credentials: %s", STA_SSID);
-        setup_mode = false; // We have hardcoded creds, not in setup mode
     } else {
-        setup_mode = false; // We have saved creds, not in setup mode
-    }
-
-    // If WiFi SSID is empty, we're in setup mode
-    if (strlen((char*)wifi_sta_config.sta.ssid) == 0) {
+        ESP_LOGI(TAG, "NVS not available - device must connect via Portal UI");
         setup_mode = true;
-        ESP_LOGI(TAG, "No WiFi configured - entering SETUP MODE");
     }
 
-    // Configure AP mode - use different SSID based on setup mode
-    const char *ap_ssid = setup_mode ? AP_SSID_SETUP : AP_SSID_PORTAL;
-    wifi_config_t wifi_ap_config = {
-        .ap = {
-            .ssid = "",
-            .ssid_len = 0,
-            .channel = AP_CHANNEL,
-            .password = AP_PASS,
-            .max_connection = AP_MAX_CONN,
-            .authmode = WIFI_AUTH_OPEN
-        },
-    };
-
-    // Copy SSID
-    strcpy((char*)wifi_ap_config.ap.ssid, ap_ssid);
-    wifi_ap_config.ap.ssid_len = strlen(ap_ssid);
-
-    // Start in APSTA mode - AP must be active for NAT to work when STA gets IP
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    // Start in STA-only mode - AP will only be started when user activates it from menu
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_sta_config));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_ap_config));
 
     // Disable WiFi power management to prevent sleep/cutoff on battery
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
@@ -362,18 +351,13 @@ void app_main(void)
 
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "WiFi started in APSTA mode - AP: %s", ap_ssid);
-    ESP_LOGI(TAG, "Connecting to STA: %s",
+    ESP_LOGI(TAG, "WiFi started in STA-only mode");
+    ESP_LOGI(TAG, "Searching for network: %s",
              strlen((char*)wifi_sta_config.sta.ssid) > 0 ? (char*)wifi_sta_config.sta.ssid : "[NONE]");
-    ESP_LOGI(TAG, "Waiting for STA connection to enable NAT...");
+    ESP_LOGI(TAG, "AP disabled on boot - use Portal UI to start if needed");
 
-    // Start DNS server for captive portal detection (hijacks portal domains, forwards others)
-    dns_server_start();
-    ESP_LOGI(TAG, "✓ DNS server started");
-
-    // Start HTTP server
-    start_captive_portal();
-    ESP_LOGI(TAG, "✓ HTTP server started at http://192.168.4.1");
+    // DNS server and captive portal are NOT started on boot
+    // They will be started when user activates AP from the Portal UI menu
 
     // Initialize sound system
     sound_system_init();

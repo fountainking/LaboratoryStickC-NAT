@@ -13,6 +13,7 @@ typedef enum {
     UI_WIFI_SETUP,       // WiFi configuration screen (Join WiFi active)
     UI_PORTAL_RUNNING,   // Laboratory portal running
     UI_TRANSFER_RUNNING, // Transfer mode
+    UI_SAVED_NETWORKS,   // Saved networks management
     UI_NAT_TEST          // Legacy NAT test
 } ui_state_t;
 
