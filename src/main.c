@@ -42,6 +42,10 @@ static int wifi_retry_count = 0;
 static bool wifi_connected = false;
 bool setup_mode = true;
 
+// Diagnostics tracking
+static int total_clients_connected = 0;
+static uint32_t portal_start_time = 0;
+
 // Ping callback
 static void ping_success(esp_ping_handle_t hdl, void *args)
 {
@@ -104,6 +108,55 @@ static void test_internet_connectivity(void)
     esp_ping_start(ping);
 }
 
+// Diagnostic monitoring task
+static void diagnostics_task(void *pvParameters)
+{
+    ESP_LOGI(TAG, "✓ Diagnostics monitoring started");
+
+    uint32_t min_free_heap = esp_get_free_heap_size();
+
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(10000));  // Log every 10 seconds
+
+        uint32_t free_heap = esp_get_free_heap_size();
+        uint32_t min_heap = esp_get_minimum_free_heap_size();
+
+        if (free_heap < min_free_heap) {
+            min_free_heap = free_heap;
+        }
+
+        // Calculate uptime
+        uint32_t uptime_sec = (xTaskGetTickCount() * portTICK_PERIOD_MS) / 1000;
+        uint32_t uptime_min = uptime_sec / 60;
+
+        // Portal uptime (if running)
+        uint32_t portal_uptime_sec = 0;
+        if (portal_start_time > 0) {
+            portal_uptime_sec = ((xTaskGetTickCount() * portTICK_PERIOD_MS) - portal_start_time) / 1000;
+        }
+
+        ESP_LOGI(TAG, "[DIAG] Uptime: %lum%lus | Free heap: %lu / %lu (min: %lu) | Clients: %d | Portal: %lus",
+                 (unsigned long)uptime_min,
+                 (unsigned long)(uptime_sec % 60),
+                 (unsigned long)free_heap,
+                 (unsigned long)min_heap,
+                 (unsigned long)min_free_heap,
+                 total_clients_connected,
+                 (unsigned long)portal_uptime_sec);
+
+        tcp_debug_printf("[DIAG] Heap: %lu bytes | Clients: %d | Uptime: %lum\r\n",
+                        (unsigned long)free_heap,
+                        total_clients_connected,
+                        (unsigned long)uptime_min);
+
+        // Check for memory leak (heap dropping consistently)
+        if (free_heap < 50000) {
+            ESP_LOGW(TAG, "[DIAG] ⚠️  LOW MEMORY: %lu bytes free!", (unsigned long)free_heap);
+            tcp_debug_printf("[DIAG] ⚠️  LOW MEMORY: %lu bytes\r\n", (unsigned long)free_heap);
+        }
+    }
+}
+
 // Portal UI mode - interactive menu system
 
 #define AP_SSID_PORTAL "Laboratory"
@@ -116,6 +169,9 @@ static void test_internet_connectivity(void)
 void start_ap(const char *ssid, bool is_setup_mode)
 {
     ESP_LOGI(TAG, "Starting AP: %s (setup_mode=%d)", ssid, is_setup_mode);
+
+    // Set portal start time for diagnostics
+    portal_start_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
     // Set global setup mode flag for HTTP server
     setup_mode = is_setup_mode;
@@ -155,7 +211,7 @@ void start_ap(const char *ssid, bool is_setup_mode)
         if (err == ESP_OK) {
             ESP_LOGI(TAG, "✓ NAT ENABLED on AP netif");
             tcp_debug_printf("[NAT] ✓ ENABLED: 192.168.4.x -> STA\r\n");
-            dns_set_captive_mode(false);  // Disable captive portal hijacking
+            // Keep captive mode enabled - access control via client approval
         } else {
             ESP_LOGE(TAG, "✗ NAT ENABLE FAILED: %s", esp_err_to_name(err));
         }
@@ -210,12 +266,15 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STACONNECTED) {
         wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
-        ESP_LOGI(TAG, "Client connected to AP - MAC: %02x:%02x:%02x:%02x:%02x:%02x",
+        total_clients_connected++;  // Track total client connections
+        ESP_LOGI(TAG, "Client connected to AP - MAC: %02x:%02x:%02x:%02x:%02x:%02x (total: %d)",
                  event->mac[0], event->mac[1], event->mac[2],
-                 event->mac[3], event->mac[4], event->mac[5]);
-        tcp_debug_printf("[AP] Client connected: %02x:%02x:%02x:%02x:%02x:%02x\r\n",
+                 event->mac[3], event->mac[4], event->mac[5],
+                 total_clients_connected);
+        tcp_debug_printf("[AP] Client connected: %02x:%02x:%02x:%02x:%02x:%02x (total: %d)\r\n",
                  event->mac[0], event->mac[1], event->mac[2],
-                 event->mac[3], event->mac[4], event->mac[5]);
+                 event->mac[3], event->mac[4], event->mac[5],
+                 total_clients_connected);
         sound_system_play(SOUND_SUCCESS);  // Success beep for client connection
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STADISCONNECTED) {
         wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
@@ -235,26 +294,33 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         wifi_retry_count = 0;  // Reset retry counter on successful connection
         sound_system_play(SOUND_SUCCESS);  // Success beep for internet connection
 
-        // ENABLE NAT - Masquerade AP subnet (192.168.4.0/24) through STA interface
-        ESP_LOGI(TAG, "Enabling NAT on AP netif (192.168.4.0/24 -> STA)");
+        // Check if AP is already running (user manually started a portal)
+        wifi_mode_t current_mode;
+        esp_wifi_get_mode(&current_mode);
+        if (current_mode == WIFI_MODE_APSTA) {
+            // ENABLE NAT - Masquerade AP subnet through STA interface
+            ESP_LOGI(TAG, "AP already running - enabling NAT");
 
-        // Enable NAPT on the AP netif using the esp_netif API
-        esp_err_t err = esp_netif_napt_enable(g_ap_netif);
-        if (err == ESP_OK) {
-            ESP_LOGI(TAG, "✓ NAT ENABLED on AP netif (192.168.4.1)");
-            ESP_LOGI(TAG, "✓ IP Forwarding: AP clients (192.168.4.x) -> masquerade as STA (" IPSTR ")", IP2STR(&event->ip_info.ip));
-            tcp_debug_printf("[NAT] ✓ ENABLED: 192.168.4.x -> " IPSTR "\r\n", IP2STR(&event->ip_info.ip));
+            vTaskDelay(pdMS_TO_TICKS(500));  // Wait for AP to stabilize
+
+            esp_err_t err = esp_netif_napt_enable(g_ap_netif);
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG, "✓ NAT ENABLED on AP netif (192.168.4.1)");
+                ESP_LOGI(TAG, "✓ IP Forwarding: AP clients (192.168.4.x) -> masquerade as STA (" IPSTR ")", IP2STR(&event->ip_info.ip));
+                tcp_debug_printf("[NAT] ✓ ENABLED: 192.168.4.x -> " IPSTR "\r\n", IP2STR(&event->ip_info.ip));
+            } else {
+                ESP_LOGE(TAG, "✗ NAT ENABLE FAILED: %s", esp_err_to_name(err));
+                tcp_debug_printf("[NAT] ✗ ENABLE FAILED: %s\r\n", esp_err_to_name(err));
+            }
+
+            // Keep captive portal enabled - already set when user started the portal
         } else {
-            ESP_LOGE(TAG, "✗ NAT ENABLE FAILED: %s", esp_err_to_name(err));
-            tcp_debug_printf("[NAT] ✗ ENABLE FAILED: %s\r\n", esp_err_to_name(err));
+            ESP_LOGI(TAG, "✓ WiFi connected - Launch Laboratory from menu to share internet");
         }
 
         // Test internet connectivity from ESP32 itself
         vTaskDelay(pdMS_TO_TICKS(2000));  // Wait 2s for routing to settle
         test_internet_connectivity();
-
-        // Disable captive portal hijacking - let iOS/Android see real internet
-        dns_set_captive_mode(false);
 
         // Start TCP debug server after we have IP
         tcp_debug_init();
@@ -362,6 +428,10 @@ void app_main(void)
     // Initialize sound system
     sound_system_init();
     ESP_LOGI(TAG, "Sound system initialized");
+
+    // Start diagnostics monitoring task
+    xTaskCreate(diagnostics_task, "diagnostics", 4096, NULL, 3, NULL);
+    ESP_LOGI(TAG, "Diagnostics task started");
 
     // Initialize Portal UI
     portal_ui_init();

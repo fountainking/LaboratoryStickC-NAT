@@ -70,10 +70,10 @@ static const char *main_menu[] = {
 
 // Portal submenu items
 static const char *portal_menu[] = {
-    "Join WiFi",
-    "Laboratory",
-    "Transfer",
-    "New (+)"
+    "wifiPORTAL",
+    "labPORTAL",
+    "xferPORTAL",
+    "newPORTAL"
 };
 #define PORTAL_MENU_COUNT 4
 

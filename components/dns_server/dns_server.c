@@ -11,10 +11,15 @@ static const char *TAG = "DNS";
 #define DNS_PORT 53
 #define DNS_MAX_LEN 512
 #define UPSTREAM_DNS "8.8.8.8"
+#define MAX_APPROVED_CLIENTS 16
 
 // Global flag: enable/disable captive portal hijacking
 // Disabled by default - enabled when user selects a portal from menu
 static bool captive_mode_enabled = false;
+
+// Client approval tracking
+static uint32_t approved_clients[MAX_APPROVED_CLIENTS] = {0};
+static int approved_count = 0;
 
 // DNS header structure
 typedef struct {
@@ -237,18 +242,27 @@ static void dns_server_task(void *pvParameters)
 
         inet_ntoa_r(source_addr.sin_addr, addr_str, sizeof(addr_str) - 1);
 
-        // Check if this is a captive portal detection domain AND captive mode is enabled
-        if (captive_mode_enabled && is_captive_portal_domain(domain)) {
-            // Hijack captive portal domains
-            ESP_LOGI(TAG, "CAPTIVE: %s -> 192.168.4.1 (from %s)", domain, addr_str);
+        uint32_t client_ip = source_addr.sin_addr.s_addr;
+        bool client_approved = dns_is_client_approved(client_ip);
+
+        // Access control logic:
+        // 1. If captive mode enabled AND client not approved → hijack to portal
+        // 2. If client approved OR captive mode disabled → forward to internet
+        if (captive_mode_enabled && !client_approved) {
+            // UNAPPROVED client - hijack ALL domains to captive portal
+            ESP_LOGI(TAG, "BLOCKED: %s -> 192.168.4.1 (unapproved client %s)", domain, addr_str);
 
             int tx_len = build_captive_response(tx_buffer, rx_buffer, len);
 
             sendto(sock, tx_buffer, tx_len, 0,
                   (struct sockaddr *)&source_addr, sizeof(source_addr));
         } else {
-            // Forward all other queries to upstream DNS
-            ESP_LOGD(TAG, "FORWARD: %s -> %s (from %s)", domain, UPSTREAM_DNS, addr_str);
+            // APPROVED client or captive mode disabled - forward to upstream DNS
+            if (client_approved) {
+                ESP_LOGD(TAG, "APPROVED: %s -> %s (from %s)", domain, UPSTREAM_DNS, addr_str);
+            } else {
+                ESP_LOGD(TAG, "FORWARD: %s -> %s (captive disabled, from %s)", domain, UPSTREAM_DNS, addr_str);
+            }
 
             int response_len = forward_dns_query(rx_buffer, len, tx_buffer, sizeof(tx_buffer));
 
@@ -283,4 +297,36 @@ void dns_set_captive_mode(bool enable)
     } else {
         ESP_LOGI(TAG, "✓ Captive mode DISABLED - forwarding all DNS queries upstream");
     }
+}
+
+void dns_approve_client(uint32_t client_ip)
+{
+    // Check if already approved
+    for (int i = 0; i < approved_count; i++) {
+        if (approved_clients[i] == client_ip) {
+            uint8_t *ip_bytes = (uint8_t*)&client_ip;
+            ESP_LOGI(TAG, "Client already approved: %d.%d.%d.%d", ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]);
+            return;
+        }
+    }
+
+    // Add to approved list
+    if (approved_count < MAX_APPROVED_CLIENTS) {
+        approved_clients[approved_count++] = client_ip;
+        uint8_t *ip_bytes = (uint8_t*)&client_ip;
+        ESP_LOGI(TAG, "✓ APPROVED client for internet access: %d.%d.%d.%d", ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]);
+    } else {
+        uint8_t *ip_bytes = (uint8_t*)&client_ip;
+        ESP_LOGW(TAG, "Approved client list full! Cannot approve: %d.%d.%d.%d", ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]);
+    }
+}
+
+bool dns_is_client_approved(uint32_t client_ip)
+{
+    for (int i = 0; i < approved_count; i++) {
+        if (approved_clients[i] == client_ip) {
+            return true;
+        }
+    }
+    return false;
 }

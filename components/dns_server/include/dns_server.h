@@ -2,6 +2,7 @@
 #define DNS_SERVER_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 /**
  * Start DNS hijack server
@@ -16,5 +17,17 @@ void dns_server_start(void);
  * Call this after user successfully configures WiFi
  */
 void dns_set_captive_mode(bool enable);
+
+/**
+ * Approve a client for internet access
+ * Approved clients get DNS forwarded to 8.8.8.8
+ * Unapproved clients get captive portal redirects
+ */
+void dns_approve_client(uint32_t client_ip);
+
+/**
+ * Check if a client is approved for internet access
+ */
+bool dns_is_client_approved(uint32_t client_ip);
 
 #endif // DNS_SERVER_H

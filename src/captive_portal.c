@@ -1,4 +1,5 @@
 #include "captive_portal.h"
+#include "dns_server.h"
 #include "log_capture.h"
 #include "ota_manager.h"
 #include "portal_mode.h"
@@ -7,6 +8,7 @@
 #include "esp_ota_ops.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
+#include "lwip/sockets.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -111,10 +113,42 @@ static const char LABORATORY_HTML[] =
 // Root handler - serves the appropriate portal based on mode
 static esp_err_t root_handler(httpd_req_t *req)
 {
-    // Redirect straight to WiFi scanner - no landing page
-    httpd_resp_set_status(req, "302 Found");
-    httpd_resp_set_hdr(req, "Location", "/wifi");
-    httpd_resp_send(req, NULL, 0);
+    // Show Laboratory landing page with grant access button and laboratory.mx link
+    const char* landing_html =
+    "<!DOCTYPE html><html><head>"
+    "<meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>"
+    "<title>Laboratory Portal</title>"
+    "<link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E⭐%3C/text%3E%3C/svg%3E\">"
+    "<style>"
+    "*{margin:0;padding:0;box-sizing:border-box;}"
+    "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#f5f5f5;color:#000;padding:30px 20px;min-height:100vh;}"
+    ".container{max-width:500px;margin:0 auto;}"
+    "h1{text-align:center;margin-bottom:20px;font-size:2.5em;}"
+    ".frame{background:#fff;border:3px solid #000;border-radius:40px;padding:35px 40px;margin-bottom:15px;}"
+    ".description{text-align:center;line-height:1.6;font-size:1em;margin-bottom:20px;}"
+    "a{width:100%;padding:18px;background:#fff;color:#000;border:3px solid #000;border-radius:50px;font-size:1.2em;cursor:pointer;margin:10px 0;font-weight:bold;text-decoration:none;display:block;text-align:center;}"
+    "a:hover{background:#f5f5f5;}"
+    ".primary{background:#000;color:#fff;}"
+    ".primary:hover{background:#333;}"
+    ".link{font-size:0.9em;padding:12px;background:transparent;border:2px solid #666;color:#666;}"
+    ".link:hover{background:#f5f5f5;border-color:#000;color:#000;}"
+    "</style>"
+    "</head><body>"
+    "<div class='container'>"
+    "<h1>⭐ Laboratory</h1>"
+    "<div class='frame'>"
+    "<div class='description'>"
+    "<strong>Welcome to Laboratory Network</strong><br>"
+    "A workforce economic program centered around entrepreneurship offering physical classrooms, retail storefronts, and content production studios."
+    "</div>"
+    "<a href='/grant' class='primary'>Get Internet Access</a>"
+    "<a href='https://laboratory.mx' class='link' target='_blank'>Visit Laboratory.mx →</a>"
+    "<a href='/wifi'>Configure WiFi</a>"
+    "</div>"
+    "</div>"
+    "</body></html>";
+
+    httpd_resp_send(req, landing_html, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
@@ -664,14 +698,103 @@ static const httpd_uri_t wifi_connect_uri = {
     .user_ctx  = NULL
 };
 
+// Grant internet access handler - approves client via DNS filtering
+static esp_err_t grant_access_handler(httpd_req_t *req)
+{
+    // Get client IP from socket descriptor
+    int sockfd = httpd_req_to_sockfd(req);
+    ESP_LOGI(TAG, "Socket descriptor: %d", sockfd);
+
+    if (sockfd < 0) {
+        ESP_LOGE(TAG, "Invalid socket descriptor");
+        // Fallback: approve the most recent DHCP client (192.168.4.2)
+        // This is a workaround - TODO: find better way to get client IP
+        uint32_t fallback_ip = (2 << 24) | (4 << 16) | (168 << 8) | 192; // 192.168.4.2 in network byte order
+        ESP_LOGW(TAG, "Using fallback IP: 192.168.4.2");
+        dns_approve_client(fallback_ip);
+    } else {
+        struct sockaddr_storage addr;
+        socklen_t addr_size = sizeof(addr);
+
+        int ret = getpeername(sockfd, (struct sockaddr *)&addr, &addr_size);
+        ESP_LOGI(TAG, "getpeername returned: %d, errno: %d", ret, errno);
+        ESP_LOGI(TAG, "Address family: %d (AF_INET=%d)", addr.ss_family, AF_INET);
+
+        if (ret < 0) {
+            ESP_LOGE(TAG, "Failed to get client address: errno %d", errno);
+            // Fallback
+            uint32_t fallback_ip = (2 << 24) | (4 << 16) | (168 << 8) | 192;
+            ESP_LOGW(TAG, "Using fallback IP: 192.168.4.2");
+            dns_approve_client(fallback_ip);
+        } else if (addr.ss_family == AF_INET) {
+            struct sockaddr_in *addr_in = (struct sockaddr_in *)&addr;
+            uint32_t client_ip = addr_in->sin_addr.s_addr;
+
+            uint8_t *ip_bytes = (uint8_t*)&client_ip;
+            ESP_LOGI(TAG, "Grant request from client: %d.%d.%d.%d",
+                     ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]);
+
+            dns_approve_client(client_ip);
+        } else {
+            ESP_LOGE(TAG, "Unexpected address family: %d", addr.ss_family);
+            // Fallback
+            uint32_t fallback_ip = (2 << 24) | (4 << 16) | (168 << 8) | 192;
+            ESP_LOGW(TAG, "Using fallback IP: 192.168.4.2");
+            dns_approve_client(fallback_ip);
+        }
+    }
+
+    // Send success page
+    const char* success_html =
+    "<!DOCTYPE html><html><head>"
+    "<meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>"
+    "<title>Access Granted - Laboratory</title>"
+    "<link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E⭐%3C/text%3E%3C/svg%3E\">"
+    "<style>"
+    "*{margin:0;padding:0;box-sizing:border-box;}"
+    "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#f5f5f5;color:#000;padding:30px 20px;min-height:100vh;display:flex;align-items:center;justify-content:center;}"
+    ".container{max-width:500px;text-align:center;}"
+    ".frame{background:#fff;border:3px solid #000;border-radius:40px;padding:40px;}"
+    "h1{font-size:3em;margin-bottom:20px;}"
+    "p{font-size:1.3em;line-height:1.6;margin:15px 0;}"
+    ".success{color:#00AA00;font-weight:bold;}"
+    "</style>"
+    "</head><body>"
+    "<div class='container'>"
+    "<div class='frame'>"
+    "<h1>✅</h1>"
+    "<p class='success'>Internet Access Granted!</p>"
+    "<p>You can now browse the internet through Laboratory.</p>"
+    "<p style='font-size:0.9em;color:#666;margin-top:30px;'>You can close this page.</p>"
+    "</div>"
+    "</div>"
+    "</body></html>";
+
+    httpd_resp_send(req, success_html, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static const httpd_uri_t grant_access_uri = {
+    .uri       = "/grant",
+    .method    = HTTP_GET,
+    .handler   = grant_access_handler,
+    .user_ctx  = NULL
+};
+
 // Captive portal detection handlers
-// All detection endpoints return 302 redirect to portal IP
-// This is more reliable than returning HTML directly (avoids caching issues)
+// Serve actual portal page to trigger captive portal popup
 static esp_err_t captive_redirect_handler(httpd_req_t *req)
 {
-    httpd_resp_set_status(req, "302 Found");
-    httpd_resp_set_hdr(req, "Location", "http://192.168.4.1");
-    httpd_resp_send(req, NULL, 0);
+    // Return simple HTML that triggers captive portal detection
+    // This forces the phone to show the captive portal popup
+    const char* captive_html =
+    "<!DOCTYPE html><html><head>"
+    "<meta http-equiv='refresh' content='0;url=http://192.168.4.1'>"
+    "</head><body>"
+    "<script>window.location.href='http://192.168.4.1';</script>"
+    "</body></html>";
+
+    httpd_resp_send(req, captive_html, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
@@ -770,6 +893,7 @@ static httpd_handle_t start_webserver(void)
     if (httpd_start(&server, &config) == ESP_OK) {
         // Core endpoints
         httpd_register_uri_handler(server, &root_uri);
+        httpd_register_uri_handler(server, &grant_access_uri);
         httpd_register_uri_handler(server, &wifi_page_uri);
         httpd_register_uri_handler(server, &transfer_page_uri);
         httpd_register_uri_handler(server, &logs_uri);
