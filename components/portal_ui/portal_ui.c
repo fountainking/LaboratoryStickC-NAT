@@ -4,6 +4,7 @@
 #include "mpu6886.h"
 #include "boot_animation.h"
 #include "dns_server.h"
+#include "ota_manager.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "freertos/FreeRTOS.h"
@@ -266,7 +267,7 @@ void portal_ui_button_a_pressed(void)
                 ESP_LOGI(TAG, "WiFi Setup opened");
             } else if (selected_portal_item == 1) {
                 // Laboratory portal - setup mode = false
-                dns_set_captive_mode(true);  // Enable captive portal
+                dns_set_captive_mode(false);  // TEST: Disable captive to check NAT
                 start_ap("labPORTAL", false);
                 portal_running = true;
                 current_state = UI_PORTAL_RUNNING;
@@ -306,8 +307,39 @@ void portal_ui_button_a_pressed(void)
                 sound_system_play(SOUND_SELECT);
                 ESP_LOGI(TAG, "Dim toggled to %s", dim_enabled ? "ON" : "OFF");
             } else if (selected_settings_item == 2) {
-                // Update - not implemented yet
-                ESP_LOGI(TAG, "Update option selected (not implemented)");
+                // OTA Update
+                ESP_LOGI(TAG, "Update option selected");
+                if (!is_wifi_connected()) {
+                    // Show error - need WiFi first
+                    m5_display_clear(&display, COLOR_BLACK);
+                    m5_display_draw_string_scaled(&display, 15, 40, "No WiFi!", COLOR_RED, COLOR_BLACK, 2);
+                    m5_display_draw_string(&display, 15, 70, "Connect to WiFi first", COLOR_WHITE, COLOR_BLACK);
+                    m5_display_draw_string(&display, 15, 85, "via wifiPORTAL", COLOR_YELLOW, COLOR_BLACK);
+                    m5_display_flush(&display);
+                    sound_system_play(SOUND_ERROR);
+                    vTaskDelay(pdMS_TO_TICKS(2000));
+                } else {
+                    // Show checking screen
+                    m5_display_clear(&display, COLOR_BLACK);
+                    m5_display_draw_string_scaled(&display, 15, 30, "Checking...", COLOR_YELLOW, COLOR_BLACK, 2);
+                    m5_display_draw_string(&display, 15, 60, "Connecting to GitHub", COLOR_WHITE, COLOR_BLACK);
+                    m5_display_draw_string(&display, 15, 80, FIRMWARE_VERSION, COLOR_LILAC, COLOR_BLACK);
+                    m5_display_flush(&display);
+
+                    // Attempt OTA check and update
+                    esp_err_t ota_result = ota_check_and_update();
+
+                    if (ota_result != ESP_OK) {
+                        // Show result (either up to date or error)
+                        m5_display_clear(&display, COLOR_BLACK);
+                        m5_display_draw_string_scaled(&display, 15, 40, "Up to date!", COLOR_GREEN, COLOR_BLACK, 2);
+                        m5_display_draw_string(&display, 15, 70, FIRMWARE_VERSION, COLOR_WHITE, COLOR_BLACK);
+                        m5_display_flush(&display);
+                        sound_system_play(SOUND_SUCCESS);
+                        vTaskDelay(pdMS_TO_TICKS(2000));
+                    }
+                    // If OTA succeeds, device will reboot automatically
+                }
             } else if (selected_settings_item == 3) {
                 // Networks
                 current_state = UI_SAVED_NETWORKS;

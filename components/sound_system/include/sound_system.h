@@ -12,7 +12,8 @@ typedef enum {
     SOUND_NAV,        // Navigation beep (short, 2kHz)
     SOUND_SELECT,     // Selection beep (medium, 2.5kHz)
     SOUND_SUCCESS,    // Success beep (long, 3kHz)
-    SOUND_ERROR       // Error beep (double beep, 1kHz)
+    SOUND_ERROR,      // Error beep (double beep, 1kHz)
+    SOUND_CONNECT     // WiFi connected fanfare (A5-E6-A6 triumphant!)
 } sound_type_t;
 
 // Initialize sound system

@@ -126,6 +126,15 @@ void sound_system_play(sound_type_t type)
             vTaskDelay(pdMS_TO_TICKS(30));
             play_tone(1200, 12);
             break;
+
+        case SOUND_CONNECT:
+            // WiFi connected fanfare - triumphant A5-E6-A6!
+            play_tone(880, 80);   // A5
+            vTaskDelay(pdMS_TO_TICKS(30));
+            play_tone(1319, 80);  // E6
+            vTaskDelay(pdMS_TO_TICKS(30));
+            play_tone(1760, 120); // A6 (hold it!)
+            break;
     }
 }
 

@@ -275,7 +275,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                  event->mac[0], event->mac[1], event->mac[2],
                  event->mac[3], event->mac[4], event->mac[5],
                  total_clients_connected);
-        sound_system_play(SOUND_SUCCESS);  // Success beep for client connection
+        sound_system_play(SOUND_CONNECT);  // Triumphant fanfare for client connection!
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STADISCONNECTED) {
         wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
         ESP_LOGI(TAG, "Client disconnected from AP - MAC: %02x:%02x:%02x:%02x:%02x:%02x",
@@ -292,7 +292,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         tcp_debug_printf("[NAT] STA got IP: " IPSTR "\r\n", IP2STR(&event->ip_info.ip));
         wifi_connected = true;
         wifi_retry_count = 0;  // Reset retry counter on successful connection
-        sound_system_play(SOUND_SUCCESS);  // Success beep for internet connection
+        sound_system_play(SOUND_CONNECT);  // Triumphant fanfare for WiFi connection!
 
         // Check if AP is already running (user manually started a portal)
         wifi_mode_t current_mode;

@@ -889,7 +889,13 @@ static httpd_handle_t start_webserver(void)
     config.lru_purge_enable = true;
     config.max_uri_handlers = 24;  // Increase to fit all URIs + captive detection
 
-    ESP_LOGI(TAG, "Starting web server on port %d", config.server_port);
+    // Multi-device support: handle iOS/Android captive detection (10+ parallel connections)
+    config.max_open_sockets = 13;   // 16 LWIP limit - 3 reserved = 13 usable
+    config.recv_wait_timeout = 3;   // Faster cleanup
+    config.send_wait_timeout = 3;
+
+    ESP_LOGI(TAG, "Starting web server on port %d with %d sockets",
+             config.server_port, config.max_open_sockets);
     if (httpd_start(&server, &config) == ESP_OK) {
         // Core endpoints
         httpd_register_uri_handler(server, &root_uri);
