@@ -267,7 +267,7 @@ void portal_ui_button_a_pressed(void)
                 ESP_LOGI(TAG, "WiFi Setup opened");
             } else if (selected_portal_item == 1) {
                 // Laboratory portal - setup mode = false
-                dns_set_captive_mode(false);  // TEST: Disable captive to check NAT
+                dns_set_captive_mode(true);  // Only hijack captive detection domains, NAT works for everything else
                 start_ap("labPORTAL", false);
                 portal_running = true;
                 current_state = UI_PORTAL_RUNNING;

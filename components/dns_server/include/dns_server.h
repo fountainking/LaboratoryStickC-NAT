@@ -12,6 +12,12 @@
 void dns_server_start(void);
 
 /**
+ * Stop DNS server and release socket
+ * Also clears approved client list
+ */
+void dns_server_stop(void);
+
+/**
  * Enable or disable captive portal hijacking
  * When disabled, all queries are forwarded to upstream DNS
  * Call this after user successfully configures WiFi

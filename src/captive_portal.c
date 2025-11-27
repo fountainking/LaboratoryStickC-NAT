@@ -14,6 +14,9 @@
 
 static const char *TAG = "Portal";
 
+// HTTP server handle for tracking/cleanup
+static httpd_handle_t portal_server = NULL;
+
 // Buffer for serving logs (16KB should be plenty)
 #define LOG_RESPONSE_BUFFER_SIZE (16 * 1024)
 
@@ -113,7 +116,22 @@ static const char LABORATORY_HTML[] =
 // Root handler - serves the appropriate portal based on mode
 static esp_err_t root_handler(httpd_req_t *req)
 {
-    // Show Laboratory landing page with grant access button and laboratory.mx link
+    ESP_LOGI(TAG, ">>> ROOT PAGE REQUEST");
+
+    // Auto-approve client when they view the landing page
+    int sockfd = httpd_req_to_sockfd(req);
+    if (sockfd >= 0) {
+        struct sockaddr_storage addr;
+        socklen_t addr_size = sizeof(addr);
+        if (getpeername(sockfd, (struct sockaddr *)&addr, &addr_size) == 0 && addr.ss_family == AF_INET) {
+            struct sockaddr_in *addr_in = (struct sockaddr_in *)&addr;
+            uint32_t client_ip = addr_in->sin_addr.s_addr;
+            ESP_LOGI(TAG, "Auto-approving client on page view");
+            dns_approve_client(client_ip);
+        }
+    }
+
+    // Show Laboratory landing page
     const char* landing_html =
     "<!DOCTYPE html><html><head>"
     "<meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>"
@@ -785,16 +803,12 @@ static const httpd_uri_t grant_access_uri = {
 // Serve actual portal page to trigger captive portal popup
 static esp_err_t captive_redirect_handler(httpd_req_t *req)
 {
-    // Return simple HTML that triggers captive portal detection
-    // This forces the phone to show the captive portal popup
-    const char* captive_html =
-    "<!DOCTYPE html><html><head>"
-    "<meta http-equiv='refresh' content='0;url=http://192.168.4.1'>"
-    "</head><body>"
-    "<script>window.location.href='http://192.168.4.1';</script>"
-    "</body></html>";
+    ESP_LOGI(TAG, ">>> CAPTIVE DETECTION: %s", req->uri);
 
-    httpd_resp_send(req, captive_html, HTTPD_RESP_USE_STRLEN);
+    // Return 302 redirect to our portal - this triggers captive portal popup
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
+    httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
 
@@ -881,13 +895,29 @@ static const httpd_uri_t success_txt_uri = {
     .user_ctx  = NULL
 };
 
+// Catch-all 404 handler - redirect ANY unknown request to portal
+static esp_err_t http_404_handler(httpd_req_t *req, httpd_err_code_t err)
+{
+    ESP_LOGI(TAG, ">>> CATCH-ALL: %s -> redirecting to portal", req->uri);
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
 static httpd_handle_t start_webserver(void)
 {
-    httpd_handle_t server = NULL;
+    // Check if already running
+    if (portal_server != NULL) {
+        ESP_LOGI(TAG, "Web server already running");
+        return portal_server;
+    }
+
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.lru_purge_enable = true;
     config.max_uri_handlers = 24;  // Increase to fit all URIs + captive detection
+    config.uri_match_fn = httpd_uri_match_wildcard;  // Enable wildcard matching
 
     // Multi-device support: handle iOS/Android captive detection (10+ parallel connections)
     config.max_open_sockets = 13;   // 16 LWIP limit - 3 reserved = 13 usable
@@ -896,35 +926,37 @@ static httpd_handle_t start_webserver(void)
 
     ESP_LOGI(TAG, "Starting web server on port %d with %d sockets",
              config.server_port, config.max_open_sockets);
-    if (httpd_start(&server, &config) == ESP_OK) {
+    if (httpd_start(&portal_server, &config) == ESP_OK) {
+        // Register 404 handler to catch ALL unmatched requests
+        httpd_register_err_handler(portal_server, HTTPD_404_NOT_FOUND, http_404_handler);
         // Core endpoints
-        httpd_register_uri_handler(server, &root_uri);
-        httpd_register_uri_handler(server, &grant_access_uri);
-        httpd_register_uri_handler(server, &wifi_page_uri);
-        httpd_register_uri_handler(server, &transfer_page_uri);
-        httpd_register_uri_handler(server, &logs_uri);
-        httpd_register_uri_handler(server, &logs_recent_uri);
-        httpd_register_uri_handler(server, &ota_page_uri);
-        httpd_register_uri_handler(server, &ota_upload_uri);
-        httpd_register_uri_handler(server, &wifi_scan_uri);
-        httpd_register_uri_handler(server, &wifi_connect_uri);
+        httpd_register_uri_handler(portal_server, &root_uri);
+        httpd_register_uri_handler(portal_server, &grant_access_uri);
+        httpd_register_uri_handler(portal_server, &wifi_page_uri);
+        httpd_register_uri_handler(portal_server, &transfer_page_uri);
+        httpd_register_uri_handler(portal_server, &logs_uri);
+        httpd_register_uri_handler(portal_server, &logs_recent_uri);
+        httpd_register_uri_handler(portal_server, &ota_page_uri);
+        httpd_register_uri_handler(portal_server, &ota_upload_uri);
+        httpd_register_uri_handler(portal_server, &wifi_scan_uri);
+        httpd_register_uri_handler(portal_server, &wifi_connect_uri);
 
         // Captive portal detection endpoints (all return 302 redirect)
-        httpd_register_uri_handler(server, &generate_204_uri);   // Android
-        httpd_register_uri_handler(server, &gen_204_uri);        // Android
-        httpd_register_uri_handler(server, &hotspot_detect_uri); // iOS/macOS
-        httpd_register_uri_handler(server, &library_test_uri);   // iOS/macOS
-        httpd_register_uri_handler(server, &connecttest_uri);    // Windows
-        httpd_register_uri_handler(server, &ncsi_uri);           // Windows
-        httpd_register_uri_handler(server, &canonical_uri);      // Linux
-        httpd_register_uri_handler(server, &connectivity_check_uri); // Linux
-        httpd_register_uri_handler(server, &success_txt_uri);    // Firefox
+        httpd_register_uri_handler(portal_server, &generate_204_uri);   // Android
+        httpd_register_uri_handler(portal_server, &gen_204_uri);        // Android
+        httpd_register_uri_handler(portal_server, &hotspot_detect_uri); // iOS/macOS
+        httpd_register_uri_handler(portal_server, &library_test_uri);   // iOS/macOS
+        httpd_register_uri_handler(portal_server, &connecttest_uri);    // Windows
+        httpd_register_uri_handler(portal_server, &ncsi_uri);           // Windows
+        httpd_register_uri_handler(portal_server, &canonical_uri);      // Linux
+        httpd_register_uri_handler(portal_server, &connectivity_check_uri); // Linux
+        httpd_register_uri_handler(portal_server, &success_txt_uri);    // Firefox
 
         ESP_LOGI(TAG, "✓ Registered core endpoints: /, /wifi, /transfer, /update");
         ESP_LOGI(TAG, "✓ Registered debug endpoints: /debug/logs, /debug/recent");
         ESP_LOGI(TAG, "✓ Registered WiFi API: /wifi/scan, /wifi/connect");
         ESP_LOGI(TAG, "✓ Registered captive portal detection (Android, iOS, Windows, Linux, Firefox)");
-        return server;
+        return portal_server;
     }
 
     ESP_LOGE(TAG, "Failed to start web server!");
@@ -938,8 +970,18 @@ void start_captive_portal(void)
     // Start HTTP server
     start_webserver();
 
-    // TODO: Add DNS server to hijack all queries
-    // For now, portal is accessible at 192.168.4.1
-
     ESP_LOGI(TAG, "Captive portal running at http://192.168.4.1");
+}
+
+void stop_captive_portal(void)
+{
+    if (portal_server == NULL) {
+        ESP_LOGI(TAG, "Web server not running");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Stopping captive portal...");
+    httpd_stop(portal_server);
+    portal_server = NULL;
+    ESP_LOGI(TAG, "✓ Captive portal stopped");
 }

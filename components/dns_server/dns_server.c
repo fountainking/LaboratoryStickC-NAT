@@ -21,6 +21,11 @@ static bool captive_mode_enabled = false;
 static uint32_t approved_clients[MAX_APPROVED_CLIENTS] = {0};
 static int approved_count = 0;
 
+// Server state tracking
+static TaskHandle_t dns_task_handle = NULL;
+static int dns_server_socket = -1;
+static bool dns_server_running = false;
+
 // DNS header structure
 typedef struct {
     uint16_t id;
@@ -198,23 +203,32 @@ static void dns_server_task(void *pvParameters)
     int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
     if (sock < 0) {
         ESP_LOGE(TAG, "Unable to create socket: errno %d", errno);
+        dns_server_running = false;
         vTaskDelete(NULL);
         return;
     }
+
+    // Allow socket reuse
+    int reuse = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
     int err = bind(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
     if (err < 0) {
         ESP_LOGE(TAG, "Socket bind failed: errno %d", errno);
         close(sock);
+        dns_server_running = false;
         vTaskDelete(NULL);
         return;
     }
+
+    // Store socket for cleanup
+    dns_server_socket = sock;
 
     ESP_LOGI(TAG, "DNS proxy server started on port 53");
     ESP_LOGI(TAG, "Captive portal domains -> 192.168.4.1");
     ESP_LOGI(TAG, "All other domains -> forwarded to %s", UPSTREAM_DNS);
 
-    while (1) {
+    while (dns_server_running) {
         struct sockaddr_in source_addr;
         socklen_t socklen = sizeof(source_addr);
 
@@ -246,22 +260,22 @@ static void dns_server_task(void *pvParameters)
         bool client_approved = dns_is_client_approved(client_ip);
 
         // Access control logic:
-        // 1. If captive mode enabled AND client not approved → hijack to portal
-        // 2. If client approved OR captive mode disabled → forward to internet
-        if (captive_mode_enabled && !client_approved) {
-            // UNAPPROVED client - hijack ALL domains to captive portal
-            ESP_LOGI(TAG, "BLOCKED: %s -> 192.168.4.1 (unapproved client %s)", domain, addr_str);
+        // Only hijack captive detection domains for NON-approved clients
+        // Once approved, forward everything so phone thinks auth succeeded
+        if (captive_mode_enabled && is_captive_portal_domain(domain) && !client_approved) {
+            // New client - hijack to show portal popup
+            ESP_LOGI(TAG, "CAPTIVE: %s -> 192.168.4.1 (new client, trigger popup)", domain);
 
             int tx_len = build_captive_response(tx_buffer, rx_buffer, len);
 
             sendto(sock, tx_buffer, tx_len, 0,
                   (struct sockaddr *)&source_addr, sizeof(source_addr));
         } else {
-            // APPROVED client or captive mode disabled - forward to upstream DNS
-            if (client_approved) {
-                ESP_LOGD(TAG, "APPROVED: %s -> %s (from %s)", domain, UPSTREAM_DNS, addr_str);
+            // Forward to upstream DNS - NAT will handle the traffic
+            if (client_approved && is_captive_portal_domain(domain)) {
+                ESP_LOGI(TAG, "APPROVED: %s -> %s (client approved, releasing)", domain, UPSTREAM_DNS);
             } else {
-                ESP_LOGD(TAG, "FORWARD: %s -> %s (captive disabled, from %s)", domain, UPSTREAM_DNS, addr_str);
+                ESP_LOGD(TAG, "FORWARD: %s -> %s", domain, UPSTREAM_DNS);
             }
 
             int response_len = forward_dns_query(rx_buffer, len, tx_buffer, sizeof(tx_buffer));
@@ -281,12 +295,53 @@ static void dns_server_task(void *pvParameters)
     }
 
     close(sock);
+    dns_server_socket = -1;
+    dns_task_handle = NULL;
     vTaskDelete(NULL);
 }
 
 void dns_server_start(void)
 {
-    xTaskCreate(dns_server_task, "dns_server", 8192, NULL, 5, NULL);
+    // Check if already running
+    if (dns_server_running) {
+        ESP_LOGI(TAG, "DNS server already running");
+        return;
+    }
+
+    dns_server_running = true;
+    xTaskCreate(dns_server_task, "dns_server", 8192, NULL, 5, &dns_task_handle);
+}
+
+void dns_server_stop(void)
+{
+    if (!dns_server_running) {
+        ESP_LOGI(TAG, "DNS server not running");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Stopping DNS server...");
+    dns_server_running = false;
+
+    // Close socket to unblock recvfrom
+    if (dns_server_socket >= 0) {
+        close(dns_server_socket);
+        dns_server_socket = -1;
+    }
+
+    // Give task time to exit
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    // Delete task if still running
+    if (dns_task_handle != NULL) {
+        vTaskDelete(dns_task_handle);
+        dns_task_handle = NULL;
+    }
+
+    // Clear approved clients for fresh start
+    approved_count = 0;
+    memset(approved_clients, 0, sizeof(approved_clients));
+
+    ESP_LOGI(TAG, "✓ DNS server stopped");
 }
 
 void dns_set_captive_mode(bool enable)

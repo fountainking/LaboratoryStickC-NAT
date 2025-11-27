@@ -226,6 +226,10 @@ void stop_ap(void)
 {
     ESP_LOGI(TAG, "Stopping AP...");
 
+    // Stop DNS and HTTP servers first
+    dns_server_stop();
+    stop_captive_portal();
+
     // Switch back to STA-only mode
     esp_wifi_set_mode(WIFI_MODE_STA);
 
