@@ -34,6 +34,7 @@
 #define COLOR_MAGENTA 0xF81F  // Standard (red + blue)
 #define COLOR_PURPLE  0x8010  // Purple
 #define COLOR_LILAC   0xC618  // Lilac
+#define COLOR_ORANGE  0xFD20  // Orange
 #define COLOR_LIGHT_YELLOW 0xFFD4  // Light yellow - RGB565(31, 63, 20)
 
 // Display handle
@@ -64,6 +65,9 @@ void m5_display_draw_sprite_scaled(m5_display_t *display, int x, int y, int w, i
 // Draw a rotated and scaled sprite (cx, cy = center, angle in radians)
 void m5_display_draw_sprite_rotated(m5_display_t *display, int cx, int cy, int w, int h, const uint16_t *data, uint16_t transparent_color, int scale, float angle);
 
+// Draw a rotated and scaled sprite with color tint (replaces fill color)
+void m5_display_draw_sprite_rotated_tinted(m5_display_t *display, int cx, int cy, int w, int h, const uint16_t *data, uint16_t transparent_color, uint16_t tint_color, int scale, float angle);
+
 // Draw a character (8x8 bitmap font)
 void m5_display_draw_char(m5_display_t *display, int x, int y, char c, uint16_t color, uint16_t bg);
 
@@ -82,8 +86,11 @@ void m5_display_draw_string_gradient(m5_display_t *display, int x, int y, const 
 // Flush framebuffer to display
 void m5_display_flush(m5_display_t *display);
 
-// Set display brightness (0 = off, 1 = on)
+// Set display brightness (false = dim, true = bright)
 void m5_display_set_brightness(bool bright);
+
+// Turn backlight completely off
+void m5_display_backlight_off(void);
 
 // Get current brightness state
 bool m5_display_get_brightness(void);

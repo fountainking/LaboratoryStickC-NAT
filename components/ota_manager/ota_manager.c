@@ -7,12 +7,20 @@
 
 static const char* TAG = "OTA";
 
-// Simple JSON parser helper - extracts value of "field":"value" pattern
+// Simple JSON parser helper - extracts value of "field":"value" or "field": "value" pattern
 static char* parse_json_field(const char* json, const char* field, char* out_buf, size_t buf_size) {
     char search[128];
-    snprintf(search, sizeof(search), "\"%s\":\"", field);
 
+    // Try without space first: "field":"
+    snprintf(search, sizeof(search), "\"%s\":\"", field);
     const char* start = strstr(json, search);
+
+    // Try with space: "field": "
+    if (!start) {
+        snprintf(search, sizeof(search), "\"%s\": \"", field);
+        start = strstr(json, search);
+    }
+
     if (!start) return NULL;
 
     start += strlen(search);

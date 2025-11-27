@@ -405,6 +405,46 @@ void m5_display_draw_sprite_rotated(m5_display_t *display, int cx, int cy, int w
     }
 }
 
+void m5_display_draw_sprite_rotated_tinted(m5_display_t *display, int cx, int cy, int w, int h, const uint16_t *data, uint16_t transparent_color, uint16_t tint_color, int scale, float angle)
+{
+    if (scale < 1) scale = 1;
+
+    float cos_a = cosf(angle);
+    float sin_a = sinf(angle);
+
+    int scaled_w = w * scale;
+    int scaled_h = h * scale;
+    int half_w = scaled_w / 2;
+    int half_h = scaled_h / 2;
+
+    int bound = (scaled_w > scaled_h ? scaled_w : scaled_h);
+
+    for (int dy = -bound; dy < bound; dy++) {
+        for (int dx = -bound; dx < bound; dx++) {
+            float src_x = (dx * cos_a + dy * sin_a) + half_w;
+            float src_y = (-dx * sin_a + dy * cos_a) + half_h;
+
+            int si = (int)(src_x / scale);
+            int sj = (int)(src_y / scale);
+
+            if (si >= 0 && si < w && sj >= 0 && sj < h) {
+                uint16_t pixel = data[sj * w + si];
+                if (pixel != transparent_color) {
+                    int px = cx + dx;
+                    int py = cy + dy;
+                    if (px >= 0 && px < LCD_WIDTH && py >= 0 && py < LCD_HEIGHT) {
+                        // Replace non-black fill pixels with tint color
+                        if (pixel != 0x0000) {
+                            pixel = tint_color;
+                        }
+                        display->framebuffer[py * LCD_WIDTH + px] = pixel;
+                    }
+                }
+            }
+        }
+    }
+}
+
 void m5_display_draw_char(m5_display_t *display, int x, int y, char c, uint16_t color, uint16_t bg)
 {
     if (c < 32 || c > 126) return;
@@ -618,4 +658,17 @@ void m5_display_set_brightness(bool bright)
 bool m5_display_get_brightness(void)
 {
     return brightness_high;
+}
+
+// Turn backlight completely off
+void m5_display_backlight_off(void)
+{
+    if (!backlight_pwm_initialized) {
+        ESP_LOGW(TAG, "Backlight PWM not initialized");
+        return;
+    }
+
+    ledc_set_duty(BL_LEDC_MODE, BL_LEDC_CHANNEL, 0);
+    ledc_update_duty(BL_LEDC_MODE, BL_LEDC_CHANNEL);
+    ESP_LOGI(TAG, "Backlight OFF");
 }

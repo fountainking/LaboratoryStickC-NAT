@@ -10,6 +10,10 @@ typedef enum {
     UI_MAIN_MENU,        // Main menu: Portal, Settings
     UI_PORTAL_SUBMENU,   // Portal submenu: Join WiFi, Laboratory, Transfer, New (+)
     UI_SETTINGS_SUBMENU, // Settings submenu: Sound, Dim, OTA, etc
+    UI_WIFI_PRELAUNCH,   // Pre-launch screen for wifiPORTAL
+    UI_LAB_PRELAUNCH,    // Pre-launch screen for labPORTAL
+    UI_XFER_PRELAUNCH,   // Pre-launch screen for xferPORTAL
+    UI_NEW_PRELAUNCH,    // Pre-launch screen for newPORTAL
     UI_WIFI_SETUP,       // WiFi configuration screen (Join WiFi active)
     UI_PORTAL_RUNNING,   // Laboratory portal running
     UI_TRANSFER_RUNNING, // Transfer mode

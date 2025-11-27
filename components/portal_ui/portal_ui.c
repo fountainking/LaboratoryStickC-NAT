@@ -38,6 +38,7 @@ static bool dim_enabled = false;  // Default: bright (dim OFF)
 
 // Screensaver state
 static bool screensaver_active = false;
+static bool in_led_sleep_mode = false;  // True when backlight is off during deep sleep
 static uint32_t last_activity_time = 0;
 static uint32_t screensaver_start_time = 0;
 #define SCREENSAVER_TIMEOUT_MS  30000  // 30 seconds to start screensaver
@@ -61,6 +62,14 @@ static float star_y = 60.0f;   // Center of 135px - 16px star
 static float star_vx = 0.0f;
 static float star_vy = 0.0f;
 static float star_angle = 0.0f;  // Rotation angle in radians
+
+// Star color palette for bounce color change
+static const uint16_t star_colors[] = {
+    COLOR_YELLOW, COLOR_ORANGE, COLOR_RED, COLOR_MAGENTA,
+    COLOR_PURPLE, COLOR_BLUE, COLOR_CYAN, COLOR_GREEN
+};
+#define STAR_COLOR_COUNT 8
+static int star_color_index = 0;
 
 // Main menu items
 static const char *main_menu[] = {
@@ -152,6 +161,10 @@ static void draw_main_menu(void);
 static void draw_portal_submenu(void);
 static void draw_settings_submenu(void);
 static void draw_saved_networks(void);
+static void draw_wifi_prelaunch(void);
+static void draw_lab_prelaunch(void);
+static void draw_xfer_prelaunch(void);
+static void draw_new_prelaunch(void);
 static void draw_wifi_setup(void);
 static void draw_portal_running(void);
 static void draw_transfer_running(void);
@@ -210,6 +223,7 @@ static void reset_activity_timer(void)
     last_activity_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
     if (screensaver_active) {
         screensaver_active = false;
+        in_led_sleep_mode = false;  // Reset sleep mode flag
         // Restore brightness
         m5_display_set_brightness(!dim_enabled);
         // Turn off LED when waking
@@ -258,33 +272,53 @@ void portal_ui_button_a_pressed(void)
             break;
 
         case UI_PORTAL_SUBMENU:
-            // Launch selected portal option
+            // Go to pre-launch screen for selected portal
             if (selected_portal_item == 0) {
-                // Join WiFi - setup mode = true
-                dns_set_captive_mode(true);  // Enable captive portal
-                start_ap("wifiPORTAL", true);
-                current_state = UI_WIFI_SETUP;
-                ESP_LOGI(TAG, "WiFi Setup opened");
+                current_state = UI_WIFI_PRELAUNCH;
+                ESP_LOGI(TAG, "WiFi pre-launch");
             } else if (selected_portal_item == 1) {
-                // Laboratory portal - setup mode = false
-                dns_set_captive_mode(true);  // Only hijack captive detection domains, NAT works for everything else
-                start_ap("labPORTAL", false);
-                portal_running = true;
-                current_state = UI_PORTAL_RUNNING;
-                ESP_LOGI(TAG, "Laboratory portal started");
+                current_state = UI_LAB_PRELAUNCH;
+                ESP_LOGI(TAG, "Lab pre-launch");
             } else if (selected_portal_item == 2) {
-                // Transfer
-                dns_set_captive_mode(true);  // Enable captive portal
-                start_ap("xferPORTAL", false);
-                current_state = UI_TRANSFER_RUNNING;
-                ESP_LOGI(TAG, "Transfer mode");
+                current_state = UI_XFER_PRELAUNCH;
+                ESP_LOGI(TAG, "Transfer pre-launch");
             } else if (selected_portal_item == 3) {
-                // New portal
-                dns_set_captive_mode(true);  // Enable captive portal
-                start_ap("newPORTAL", false);
-                current_state = UI_TRANSFER_RUNNING;  // Reuse transfer state for now
-                ESP_LOGI(TAG, "New portal started");
+                current_state = UI_NEW_PRELAUNCH;
+                ESP_LOGI(TAG, "New portal pre-launch");
             }
+            break;
+
+        case UI_WIFI_PRELAUNCH:
+            // Actually launch wifiPORTAL
+            dns_set_captive_mode(true);
+            start_ap("wifiPORTAL", true);
+            current_state = UI_WIFI_SETUP;
+            ESP_LOGI(TAG, "WiFi Setup launched");
+            break;
+
+        case UI_LAB_PRELAUNCH:
+            // Actually launch labPORTAL
+            dns_set_captive_mode(true);
+            start_ap("labPORTAL", false);
+            portal_running = true;
+            current_state = UI_PORTAL_RUNNING;
+            ESP_LOGI(TAG, "Laboratory portal launched");
+            break;
+
+        case UI_XFER_PRELAUNCH:
+            // Actually launch xferPORTAL
+            dns_set_captive_mode(true);
+            start_ap("xferPORTAL", false);
+            current_state = UI_TRANSFER_RUNNING;
+            ESP_LOGI(TAG, "Transfer mode launched");
+            break;
+
+        case UI_NEW_PRELAUNCH:
+            // Actually launch newPORTAL
+            dns_set_captive_mode(true);
+            start_ap("newPORTAL", false);
+            current_state = UI_TRANSFER_RUNNING;
+            ESP_LOGI(TAG, "New portal launched");
             break;
 
         case UI_SETTINGS_SUBMENU:
@@ -387,6 +421,14 @@ void portal_ui_button_b_pressed(void)
         case UI_SETTINGS_SUBMENU:
             // Back to main menu
             current_state = UI_MAIN_MENU;
+            break;
+
+        case UI_WIFI_PRELAUNCH:
+        case UI_LAB_PRELAUNCH:
+        case UI_XFER_PRELAUNCH:
+        case UI_NEW_PRELAUNCH:
+            // Back to portal submenu
+            current_state = UI_PORTAL_SUBMENU;
             break;
 
         case UI_SAVED_NETWORKS:
@@ -548,6 +590,94 @@ static void draw_portal_submenu(void)
         }
         y += 23;
     }
+
+    m5_display_flush(&display);
+}
+
+// Draw WiFi pre-launch screen
+static void draw_wifi_prelaunch(void)
+{
+    m5_display_clear(&display, COLOR_BLACK);
+
+    // Title
+    m5_display_draw_string_scaled(&display, 15, 15, "wifiPORTAL", COLOR_YELLOW, COLOR_BLACK, 2);
+
+    // Description
+    m5_display_draw_string(&display, 15, 45, "Configure WiFi credentials", COLOR_WHITE, COLOR_BLACK);
+    m5_display_draw_string(&display, 15, 60, "for NAT passthrough", COLOR_WHITE, COLOR_BLACK);
+
+    // Launch button
+    m5_display_fill_rect(&display, 60, 85, 120, 30, COLOR_YELLOW);
+    m5_display_draw_string_scaled(&display, 80, 91, "LAUNCH", COLOR_BLACK, COLOR_YELLOW, 2);
+
+    // Instructions
+    m5_display_draw_string(&display, 75, 120, "A:Go  B:Back", COLOR_LILAC, COLOR_BLACK);
+
+    m5_display_flush(&display);
+}
+
+// Draw Lab pre-launch screen
+static void draw_lab_prelaunch(void)
+{
+    m5_display_clear(&display, COLOR_BLACK);
+
+    // Title
+    m5_display_draw_string_scaled(&display, 15, 15, "labPORTAL", COLOR_YELLOW, COLOR_BLACK, 2);
+
+    // Description
+    m5_display_draw_string(&display, 15, 45, "Share internet via NAT", COLOR_WHITE, COLOR_BLACK);
+    m5_display_draw_string(&display, 15, 60, "with captive portal", COLOR_WHITE, COLOR_BLACK);
+
+    // Launch button (orange to match menu)
+    m5_display_fill_rect(&display, 60, 85, 120, 30, 0xFD20);
+    m5_display_draw_string_scaled(&display, 80, 91, "LAUNCH", COLOR_BLACK, 0xFD20, 2);
+
+    // Instructions
+    m5_display_draw_string(&display, 75, 120, "A:Go  B:Back", COLOR_LILAC, COLOR_BLACK);
+
+    m5_display_flush(&display);
+}
+
+// Draw Transfer pre-launch screen
+static void draw_xfer_prelaunch(void)
+{
+    m5_display_clear(&display, COLOR_BLACK);
+
+    // Title
+    m5_display_draw_string_scaled(&display, 15, 15, "xferPORTAL", COLOR_YELLOW, COLOR_BLACK, 2);
+
+    // Description
+    m5_display_draw_string(&display, 15, 45, "File transfer mode", COLOR_WHITE, COLOR_BLACK);
+    m5_display_draw_string(&display, 15, 60, "(Coming Soon)", COLOR_LILAC, COLOR_BLACK);
+
+    // Launch button (red to match menu)
+    m5_display_fill_rect(&display, 60, 85, 120, 30, COLOR_RED);
+    m5_display_draw_string_scaled(&display, 80, 91, "LAUNCH", COLOR_WHITE, COLOR_RED, 2);
+
+    // Instructions
+    m5_display_draw_string(&display, 75, 120, "A:Go  B:Back", COLOR_LILAC, COLOR_BLACK);
+
+    m5_display_flush(&display);
+}
+
+// Draw New pre-launch screen
+static void draw_new_prelaunch(void)
+{
+    m5_display_clear(&display, COLOR_BLACK);
+
+    // Title
+    m5_display_draw_string_scaled(&display, 15, 15, "newPORTAL", COLOR_YELLOW, COLOR_BLACK, 2);
+
+    // Description
+    m5_display_draw_string(&display, 15, 45, "Custom portal mode", COLOR_WHITE, COLOR_BLACK);
+    m5_display_draw_string(&display, 15, 60, "(Experimental)", COLOR_LILAC, COLOR_BLACK);
+
+    // Launch button (blue to match menu)
+    m5_display_fill_rect(&display, 60, 85, 120, 30, COLOR_BLUE);
+    m5_display_draw_string_scaled(&display, 80, 91, "LAUNCH", COLOR_WHITE, COLOR_BLUE, 2);
+
+    // Instructions
+    m5_display_draw_string(&display, 75, 120, "A:Go  B:Back", COLOR_LILAC, COLOR_BLACK);
 
     m5_display_flush(&display);
 }
@@ -723,8 +853,13 @@ static void draw_screensaver(void)
 
     // After 60 seconds, show blank screen with LED pulse
     if (elapsed > STAR_ANIMATION_MS) {
-        m5_display_clear(&display, COLOR_BLACK);
-        m5_display_flush(&display);
+        if (!in_led_sleep_mode) {
+            m5_display_clear(&display, COLOR_BLACK);
+            m5_display_flush(&display);
+            m5_display_backlight_off();
+            in_led_sleep_mode = true;
+            ESP_LOGI(TAG, "Entering LED sleep mode - backlight off");
+        }
 
         // Initialize LED GPIO if first time
         static bool led_gpio_initialized = false;
@@ -792,23 +927,27 @@ static void draw_screensaver(void)
     if (star_x < 0) {
         star_x = 0;
         star_vx = -star_vx * 0.7f;
+        star_color_index = (star_color_index + 1) % STAR_COLOR_COUNT;
     } else if (star_x > 240 - scaled_size) {
         star_x = 240 - scaled_size;
         star_vx = -star_vx * 0.7f;
+        star_color_index = (star_color_index + 1) % STAR_COLOR_COUNT;
     }
 
     if (star_y < 0) {
         star_y = 0;
         star_vy = -star_vy * 0.7f;
+        star_color_index = (star_color_index + 1) % STAR_COLOR_COUNT;
     } else if (star_y > 135 - scaled_size) {
         star_y = 135 - scaled_size;
         star_vy = -star_vy * 0.7f;
+        star_color_index = (star_color_index + 1) % STAR_COLOR_COUNT;
     }
 
-    // Draw the star at 4x scale with rotation (use center coordinates)
+    // Draw the star at 4x scale with rotation and current color
     float center_x = star_x + half_size;
     float center_y = star_y + half_size;
-    m5_display_draw_sprite_rotated(&display, (int)center_x, (int)center_y, STAR_WIDTH, STAR_HEIGHT, STAR_EMOJI_DATA, STAR_TRANSPARENT, 4, star_angle);
+    m5_display_draw_sprite_rotated_tinted(&display, (int)center_x, (int)center_y, STAR_WIDTH, STAR_HEIGHT, STAR_EMOJI_DATA, STAR_TRANSPARENT, star_colors[star_color_index], 4, star_angle);
 
     m5_display_flush(&display);
 }
@@ -1036,6 +1175,18 @@ static void ui_task(void *param)
                     break;
                 case UI_SETTINGS_SUBMENU:
                     draw_settings_submenu();
+                    break;
+                case UI_WIFI_PRELAUNCH:
+                    draw_wifi_prelaunch();
+                    break;
+                case UI_LAB_PRELAUNCH:
+                    draw_lab_prelaunch();
+                    break;
+                case UI_XFER_PRELAUNCH:
+                    draw_xfer_prelaunch();
+                    break;
+                case UI_NEW_PRELAUNCH:
+                    draw_new_prelaunch();
                     break;
                 case UI_SAVED_NETWORKS:
                     draw_saved_networks();
